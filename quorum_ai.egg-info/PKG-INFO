@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: quorum-ai
+Version: 0.1.0
+Summary: A disclosed AI meeting delegate with bounded autonomy
+Requires-Python: >=3.10
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.29
+Requires-Dist: rapidfuzz>=3.6
+Requires-Dist: numpy>=1.26
+Provides-Extra: audio
+Requires-Dist: faster-whisper>=1.0; extra == "audio"
+Requires-Dist: sounddevice>=0.4; extra == "audio"
+Requires-Dist: silero-vad>=5.1; extra == "audio"
+Provides-Extra: voice
+Requires-Dist: TTS>=0.22; extra == "voice"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: httpx; extra == "dev"
+Requires-Dist: playwright; extra == "dev"
