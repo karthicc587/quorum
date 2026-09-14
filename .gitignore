@@ -1,0 +1,8 @@
+.env
+.quorum/
+shots/
+voices/
+__pycache__/
+*.pyc
+.venv/
+models/

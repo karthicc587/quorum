@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>quorum.ai</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E4E7EB; --surface:#FBFCFD; --ink:#151B24; --muted:#6E7885;
+  --line:#C9CFD7; --live:#1B3FCC; --wait:#B4780C; --ok:#1F6B44;
+  --ui:"Space Grotesk",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);font-family:var(--ui);
+  font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--live);outline-offset:2px}
+
+/* ---------------------------------------------------------------- shell */
+.shell{height:100%;display:grid;grid-template-rows:auto auto auto 1fr;max-width:1240px;margin:0 auto;padding:20px 24px 24px;gap:16px}
+
+header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+.wordmark{font-weight:700;font-size:22px;letter-spacing:-.03em}
+.wordmark span{color:var(--live);font-weight:400}
+.tile-name{
+  font-family:var(--mono);font-size:12.5px;color:var(--muted);
+  border:1px solid var(--line);border-radius:3px;padding:2px 7px;background:var(--surface);
+}
+header .spacer{flex:1}
+
+.ghost{background:none;border:1px solid var(--line);border-radius:4px;padding:6px 12px;font-size:13.5px}
+.ghost:hover{border-color:var(--ink)}
+.solid{background:var(--ink);color:var(--surface);border:1px solid var(--ink);border-radius:4px;padding:6px 14px;font-size:13.5px;font-weight:500}
+.solid:hover{background:#000}
+.solid.stop{background:var(--surface);color:var(--ink)}
+
+/* ------------------------------------------------------------ signal chain */
+.chain{
+  display:grid;grid-template-columns:repeat(4,1fr);background:var(--surface);
+  border:1px solid var(--line);border-radius:6px;overflow:hidden;
+}
+.node{padding:11px 14px;border-right:1px solid var(--line);position:relative;transition:background .12s}
+.node:last-child{border-right:0}
+.node .lbl{font-family:var(--mono);font-size:11.5px;color:var(--muted);letter-spacing:.02em}
+.node .val{font-size:15px;font-weight:500;margin-top:1px}
+.node::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:transparent;transition:background .12s}
+.node.on{background:#F2F5FF}
+.node.on .lbl{color:var(--live)}
+.node.on::after{background:var(--live)}
+.node.warn{background:#FBF4E6}
+.node.warn .lbl{color:var(--wait)}
+.node.warn::after{background:var(--wait)}
+
+/* ------------------------------------------------------------------ body */
+.body{display:grid;grid-template-columns:1fr 380px;gap:16px;min-height:0}
+@media(max-width:920px){.body{grid-template-columns:1fr}.right{order:-1}}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;min-height:0}
+.panel > h2{
+  margin:0;padding:10px 14px;font-size:13px;font-weight:500;color:var(--muted);
+  border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;
+}
+.panel > h2 .count{font-family:var(--mono);font-size:11.5px}
+
+/* ------------------------------------------------------------- transcript */
+.log{overflow-y:auto;padding:6px 0;flex:1;min-height:0}
+.turn{padding:7px 14px;border-bottom:1px solid #EFF1F4;display:grid;grid-template-columns:60px 1fr;gap:10px}
+.turn:last-child{border-bottom:0}
+.turn .clock{font-family:var(--mono);font-size:11.5px;color:var(--muted);padding-top:2px}
+.turn .text{min-width:0}
+.turn.agent .text{color:var(--live)}
+.turn.you .text{color:var(--ok)}
+.turn .who{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.meta{margin-top:3px;font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
+.meta b{font-weight:500;color:var(--ink)}
+.meta .esc{color:var(--wait)}
+.empty{padding:28px 16px;color:var(--muted);font-size:14px;max-width:44ch}
+
+/* ------------------------------------------------------------- escalation */
+.right{display:flex;flex-direction:column;gap:16px;min-height:0}
+
+.standby{padding:16px 14px;color:var(--muted);font-size:14px}
+.standby .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--line);margin-right:7px;vertical-align:middle}
+.standby.live .dot{background:var(--live)}
+
+.esc-panel{border-color:var(--wait);background:#FEFBF4}
+.esc-panel > h2{color:var(--wait);border-bottom-color:#EBDCC0}
+.esc-body{padding:14px}
+.clockface{display:flex;align-items:baseline;gap:8px;margin-bottom:12px}
+.clockface .big{font-family:var(--mono);font-weight:500;font-size:46px;line-height:1;color:var(--wait);font-variant-numeric:tabular-nums}
+.clockface .unit{font-family:var(--mono);font-size:13px;color:var(--muted)}
+.asked{font-size:16px;line-height:1.35;margin:0 0 10px}
+.why{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:12px}
+textarea{
+  width:100%;font:inherit;font-size:15px;padding:9px 10px;border:1px solid var(--line);
+  border-radius:4px;background:var(--surface);resize:vertical;min-height:76px;color:inherit;
+}
+textarea:focus{border-color:var(--wait);outline:none;box-shadow:0 0 0 2px #F2E3C4}
+.esc-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
+.esc-actions .hint{font-size:11.5px;color:var(--muted);margin-left:auto}
+.speak{background:var(--wait);border:1px solid var(--wait);color:#fff;border-radius:4px;padding:7px 15px;font-weight:500;font-size:14px}
+.speak:hover{filter:brightness(.93)}
+
+/* --------------------------------------------------------------- settings */
+dialog{
+  border:1px solid var(--line);border-radius:8px;padding:0;background:var(--surface);
+  color:inherit;width:min(560px,92vw);box-shadow:0 18px 48px rgba(21,27,36,.18);
+}
+dialog::backdrop{background:rgba(21,27,36,.34)}
+.sheet-head{display:flex;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--line)}
+.sheet-head h3{margin:0;font-size:16px;font-weight:500}
+.sheet-body{padding:16px 18px;max-height:66vh;overflow-y:auto}
+.field{margin-bottom:18px}
+.field label{display:block;font-size:14px;margin-bottom:3px}
+.field .desc{font-size:13px;color:var(--muted);margin-bottom:7px;max-width:56ch}
+.field input[type=text],.field input[type=password]{
+  width:100%;font-family:var(--mono);font-size:13.5px;padding:8px 10px;
+  border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit;
+}
+.row{display:flex;gap:8px}
+.row input{flex:1}
+.kb-editor{width:100%;font-family:var(--mono);font-size:13px;min-height:230px;line-height:1.55}
+.warn-list{margin:9px 0 0;padding-left:17px;font-size:13px;color:var(--wait)}
+.tokens{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:6px}
+.saved{color:var(--ok);font-size:13px;margin-left:9px}
+.status{border:1px solid var(--line);border-left-width:3px;border-radius:4px;padding:10px 12px;font-size:13.5px;background:#fff}
+.status.bad{border-left-color:var(--wait);background:#FEFBF4}
+.status.good{border-left-color:var(--ok)}
+.status a{color:var(--live)}
+.status .cmd{font-family:var(--mono);font-size:12.5px;display:block;margin-top:6px;color:var(--muted);word-break:break-all}
+.banner{background:#FEF6E9;border:1px solid #E8D3A8;border-radius:5px;padding:8px 12px;font-size:13.5px;color:#7A5206;display:flex;gap:10px;align-items:baseline}
+.banner b{font-weight:500}
+.banner button{margin-left:auto;background:none;border:0;color:inherit;font-size:13px;text-decoration:underline;padding:0}
+.script{font-family:var(--mono);font-size:12.5px;line-height:1.9;background:#fff;border:1px solid var(--line);border-radius:4px;padding:10px 12px;counter-reset:l}
+.script div::before{counter-increment:l;content:counter(l) ". ";color:var(--muted)}
+.tabs{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#fff}
+.tabs button{border:0;background:none;padding:6px 16px;font-size:13.5px;border-right:1px solid var(--line)}
+.tabs button:last-child{border-right:0}
+.tabs button[aria-pressed=true]{background:var(--ink);color:var(--surface)}
+.check{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid #EFF1F4;align-items:flex-start}
+.check:last-child{border-bottom:0}
+.check input{margin-top:3px;flex:none}
+.check .t{font-size:14px}
+.check .d{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:52ch}
+.check.crit .t::after{content:" — required";color:var(--wait);font-size:12px}
+.check.done .t{color:var(--muted)}
+.pill{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+.pill.bad{border-color:var(--wait);color:var(--wait);background:#FEFBF4}
+.pill.good{border-color:var(--ok);color:var(--ok)}
+select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="wordmark">quorum<span>.ai</span></div>
+    <div class="tile-name" id="tileName">AI Agent — Kartik</div>
+    <button class="pill" id="preflightPill"></button>
+    <div class="spacer"></div>
+    <button class="ghost" id="demoBtn">Run demo</button>
+    <button class="ghost" id="setBtn">Settings</button>
+    <button class="solid" id="runBtn">Start listening</button>
+  </header>
+
+  <div id="bannerSlot"></div>
+
+  <div class="chain" id="chain">
+    <div class="node" data-stage="listening">
+      <div class="lbl">listen</div><div class="val" id="n1">room audio</div>
+    </div>
+    <div class="node" data-stage="hearing">
+      <div class="lbl">hear</div><div class="val" id="n2">—</div>
+    </div>
+    <div class="node" data-stage="deciding">
+      <div class="lbl">decide</div><div class="val" id="n3">—</div>
+    </div>
+    <div class="node" data-stage="speaking">
+      <div class="lbl">speak</div><div class="val" id="n4">—</div>
+    </div>
+  </div>
+
+  <div class="body">
+    <section class="panel">
+      <h2>Transcript <span class="count" id="turnCount"></span></h2>
+      <div class="log" id="log">
+        <div class="empty">Nothing heard yet. Start listening, or run the demo to
+        see a full turn without a soundcard attached.</div>
+      </div>
+    </section>
+
+    <div class="right">
+      <section class="panel" id="statePanel">
+        <h2>Agent</h2>
+        <div class="standby" id="standby"><span class="dot"></span><span id="standbyText">Idle</span></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<dialog id="sheet">
+  <div class="sheet-head">
+    <h3 id="sheetTitle">Settings</h3>
+    <button class="ghost" id="closeSheet">Close</button>
+  </div>
+  <div class="sheet-body">
+
+    <div class="field">
+      <label for="groqKey">Groq API key</label>
+      <div class="desc">Free tier, no card required. Stored in <code>.env</code> on this
+      machine only — it is never written into the source or sent anywhere but Groq.</div>
+      <div class="row">
+        <input type="password" id="groqKey" placeholder="gsk_…" autocomplete="off">
+        <button class="solid" id="saveKey">Save key</button>
+      </div>
+      <div class="tokens" id="keyState"></div>
+    </div>
+
+    <div class="field">
+      <label>Meeting platform</label>
+      <div class="desc">The audio path is the same either way. What differs is
+      how each client processes your microphone, and how you rename your tile.</div>
+      <div class="tabs" id="platformTabs"></div>
+      <div class="desc" style="margin-top:9px" id="renameHow"></div>
+    </div>
+
+    <div class="field">
+      <label>Before you join</label>
+      <div class="desc" id="preflightNote"></div>
+      <div id="checklist"></div>
+      <div class="tokens" id="platformNotes" style="margin-top:10px"></div>
+      <div style="margin-top:12px">
+        <label style="font-size:13px">Disclosure message to paste in chat</label>
+        <textarea id="disclosure" readonly style="min-height:66px;font-size:14px"></textarea>
+        <button class="ghost" id="copyDisc" style="margin-top:6px">Copy message</button>
+        <span class="saved" id="discCopied"></span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Audio routing</label>
+      <div class="desc">The meeting's sound has to reach this app, and this app's
+      voice has to reach the meeting — both at once, on one machine.</div>
+      <div class="status" id="audioStatus"></div>
+      <div style="margin-top:10px">
+        <label for="capDev" style="font-size:13px">Capture the meeting from</label>
+        <select id="capDev"></select>
+      </div>
+      <div style="margin-top:8px">
+        <label for="playDev" style="font-size:13px">Send the agent's voice to</label>
+        <select id="playDev"></select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Voice</label>
+      <div class="desc" id="voiceEngine"></div>
+      <div class="status" id="voiceStatus"></div>
+      <div id="voiceEnroll" style="margin-top:10px;display:none">
+        <div class="desc" id="voiceNote"></div>
+        <div class="script" id="voiceScript"></div>
+        <div style="margin-top:9px">
+          <input type="file" id="refWav" accept="audio/wav">
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="wakePhrase">Wake phrase</label>
+      <div class="desc">What people say to address the agent. Matched loosely, so
+      mishearings still land.</div>
+      <input type="text" id="wakePhrase">
+    </div>
+
+    <div class="field">
+      <label for="kbText">What the agent may say</label>
+      <div class="desc">Facts it can state, positions it can restate but not extend,
+      and questions it must always hand back to you. Anything not written here
+      gets escalated.</div>
+      <textarea id="kbText" class="kb-editor"></textarea>
+      <div class="tokens" id="kbTokens"></div>
+      <ul class="warn-list" id="kbWarn"></ul>
+      <div style="margin-top:9px"><button class="solid" id="saveKb">Save</button><span class="saved" id="kbSaved"></span></div>
+    </div>
+
+    <div class="field" style="margin-bottom:4px">
+      <label>This machine</label>
+      <div class="desc" id="tierInfo"></div>
+    </div>
+
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = null, clockTimer = null, ws = null;
+
+/* ----------------------------------------------------------------- socket */
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => render(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connect, 1200);
+}
+const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+
+/* ------------------------------------------------------------------ chain */
+const STAGE_TEXT = {
+  warming:   ["loading models","—","—","—"],
+  idle:      ["room audio","—","—","—"],
+  listening: ["room audio","—","—","—"],
+  hearing:   ["room audio","transcribing","—","—"],
+  deciding:  ["room audio","heard","checking bounds","—"],
+  speaking:  ["room audio","heard","cleared","voice out"],
+  waiting:   ["room audio","heard","needs you","held"],
+};
+
+function paintChain(stage){
+  const t = STAGE_TEXT[stage] || STAGE_TEXT.idle;
+  ["#n1","#n2","#n3","#n4"].forEach((id,i) => $(id).textContent = t[i]);
+  document.querySelectorAll(".node").forEach(n => {
+    n.classList.remove("on","warn");
+    if (stage === "waiting" && n.dataset.stage === "deciding") n.classList.add("warn");
+    else if (n.dataset.stage === stage) n.classList.add("on");
+  });
+}
+
+/* ------------------------------------------------------------- transcript */
+const hhmm = t => new Date(t*1000).toLocaleTimeString("en-GB", {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+const WHO = {room:"room", agent:"agent", you:"you"};
+
+function paintLog(turns){
+  const log = $("#log");
+  $("#turnCount").textContent = turns.length ? `${turns.length} turns` : "";
+  if (!turns.length) return;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  log.innerHTML = turns.map(t => {
+    const total = Object.values(t.stages || {}).reduce((a,b)=>a+b,0);
+    const bits = [];
+    if (t.tier === "answer") bits.push(`<span><b>answered</b> ${(t.confidence??0).toFixed(2)}</span>`);
+    if (t.tier === "escalate") bits.push(`<span class="esc"><b>escalated</b> ${t.guard || t.reason || ""}</span>`);
+    if (t.tier === "human") bits.push(`<span><b>you answered</b></span>`);
+    if (total) bits.push(`<span>${(total/1000).toFixed(1)}s</span>`);
+    return `<div class="turn ${t.speaker}">
+      <div class="clock">${hhmm(t.t)}</div>
+      <div class="text"><div class="who">${WHO[t.speaker]||t.speaker}</div>
+        ${escapeHtml(t.text)}
+        ${bits.length ? `<div class="meta">${bits.join("")}</div>` : ""}
+      </div></div>`;
+  }).join("");
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+const escapeHtml = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* ------------------------------------------------------------- escalation */
+function paintRight(s){
+  const right = document.querySelector(".right");
+  if (s.pending){
+    if (!$("#escPanel")){
+      right.innerHTML = `
+        <section class="panel esc-panel" id="escPanel">
+          <h2>Needs you</h2>
+          <div class="esc-body">
+            <div class="clockface"><span class="big" id="elapsed">0.0</span><span class="unit">seconds held</span></div>
+            <p class="asked" id="asked"></p>
+            <div class="why" id="why"></div>
+            <textarea id="reply" placeholder="Type what the agent should say."></textarea>
+            <div class="esc-actions">
+              <button class="speak" id="speakBtn">Speak this</button>
+              <button class="ghost" id="skipBtn">Say nothing</button>
+              <span class="hint">Cmd + Enter</span>
+            </div>
+          </div>
+        </section>`;
+      wireEscalation();
+      $("#reply").focus();
+    }
+    $("#asked").textContent = `“${s.pending.question}”`;
+    $("#why").textContent = s.pending.guard
+      ? `held by the ${s.pending.guard} rule`
+      : `held — ${s.pending.reason}`;
+    startClock(s.pending.opened_at);
+  } else {
+    stopClock();
+    right.innerHTML = `
+      <section class="panel" id="statePanel">
+        <h2>Agent</h2>
+        <div class="standby ${s.running ? "live":""}">
+          <span class="dot"></span><span>${s.running ? "Listening for the wake phrase" : "Idle"}</span>
+        </div>
+      </section>`;
+  }
+}
+
+function wireEscalation(){
+  const speak = () => {
+    const t = $("#reply").value.trim();
+    if (t) send({type:"reply", text:t});
+  };
+  $("#speakBtn").onclick = speak;
+  $("#skipBtn").onclick = () => send({type:"dismiss"});
+  $("#reply").addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") speak();
+  });
+}
+
+function startClock(t0){
+  stopClock();
+  const tick = () => {
+    const el = $("#elapsed");
+    if (!el) return stopClock();
+    el.textContent = (Date.now()/1000 - t0).toFixed(1);
+  };
+  tick();
+  clockTimer = setInterval(tick, 100);
+}
+function stopClock(){ if (clockTimer) clearInterval(clockTimer); clockTimer = null; }
+
+/* --------------------------------------------------------------- settings */
+function paintBanner(s){
+  const slot = $("#bannerSlot");
+  if (!s.error){ slot.innerHTML = ""; return; }
+  slot.innerHTML = `<div class="banner"><b>Stopped</b><span>${escapeHtml(s.error)}</span>
+    <button id="fixIt">Open settings</button></div>`;
+  $("#fixIt").onclick = () => $("#sheet").showModal();
+}
+
+function fillDevices(sel, names, current){
+  const el = $(sel);
+  el.innerHTML = `<option value="">System default</option>` +
+    names.map(n => `<option${n === current ? " selected":""}>${escapeHtml(n)}</option>`).join("");
+}
+
+function paintAudio(s){
+  const a = s.audio, el = $("#audioStatus");
+  el.className = "status " + (a.ok ? "good" : "bad");
+  el.innerHTML = a.ok
+    ? `Ready. Capturing from ${escapeHtml((a.capture_candidates||[])[0] || "the default device")}.`
+    : `${escapeHtml(a.problem || "Audio unavailable.")}
+       ${a.url ? `<br><a href="${a.url}" target="_blank" rel="noopener">Install ${escapeHtml(a.needs)}</a>` : ""}
+       ${a.note ? `<span class="cmd">${escapeHtml(a.note)}</span>` : ""}`;
+  fillDevices("#capDev", a.capture_candidates || [], s.settings.capture_device);
+  fillDevices("#playDev", a.playback_candidates || [], s.settings.playback_device);
+}
+
+function paintVoice(s){
+  $("#voiceEngine").textContent = s.voice.engine;
+  const el = $("#voiceStatus");
+  el.className = "status " + (s.voice.enrolled ? "good" : "bad");
+  el.textContent = s.voice.enrolled
+    ? "A reference recording is saved. The agent speaks in your voice."
+    : "No recording yet. The agent will use the fallback voice, which is not yours.";
+  $("#voiceEnroll").style.display = s.voice.enrolled ? "none" : "block";
+  $("#voiceNote").textContent = s.voice.note;
+  $("#voiceScript").innerHTML = s.voice.script.map(l => `<div>${escapeHtml(l)}</div>`).join("");
+}
+
+function paintPreflight(s){
+  const pf = s.preflight;
+  const pill = $("#preflightPill");
+  const open = pf.steps.filter(x => !x.done).length;
+  pill.className = "pill " + (pf.ready ? "good" : "bad");
+  pill.textContent = pf.ready
+    ? `${pf.name} ready`
+    : `${pf.name} — ${pf.blocking.length} required step${pf.blocking.length === 1 ? "" : "s"} left`;
+  pill.title = open ? pf.steps.filter(x => !x.done).map(x => x.title).join("\n") : "";
+  pill.onclick = () => $("#sheet").showModal();
+}
+
+function paintPlatform(s){
+  const pf = s.preflight;
+  $("#platformTabs").innerHTML = s.platforms.map(p =>
+    `<button data-id="${p.id}" aria-pressed="${p.id === pf.platform}">${escapeHtml(p.name)}</button>`
+  ).join("");
+  document.querySelectorAll("#platformTabs button").forEach(b =>
+    b.onclick = () => send({type:"platform", id:b.dataset.id}));
+
+  $("#renameHow").textContent = pf.rename_how;
+  $("#preflightNote").textContent = pf.ready
+    ? "All required steps confirmed. Required steps reset after a day."
+    : "Nothing here can be checked from inside the app — these live in the meeting client.";
+
+  $("#checklist").innerHTML = pf.steps.map(x => `
+    <label class="check ${x.critical ? "crit":""} ${x.done ? "done":""}">
+      <input type="checkbox" data-key="${x.key}" ${x.done ? "checked":""}>
+      <span><span class="t">${escapeHtml(x.title)}</span>
+      <span class="d">${escapeHtml(x.detail)}</span></span>
+    </label>`).join("");
+  document.querySelectorAll("#checklist input").forEach(i =>
+    i.onchange = () => send({type:"preflight", key:i.dataset.key, on:i.checked}));
+
+  $("#platformNotes").innerHTML = pf.notes.map(n => `• ${escapeHtml(n)}`).join("<br>");
+  $("#disclosure").value = pf.disclosure_chat;
+}
+
+function paintSettings(s){
+  // The checklist has to repaint even with the sheet open — switching
+  // platform happens inside the sheet, and the steps are what changes.
+  paintPlatform(s);
+  if ($("#sheet").open) return;             // don't clobber mid-edit
+  paintAudio(s);
+  paintVoice(s);
+  $("#kbText").value = s.kb.text;
+  $("#wakePhrase").value = s.settings.wake_phrase;
+  $("#kbTokens").textContent =
+    `${s.kb.counts.facts} facts · ${s.kb.counts.positions} positions · ` +
+    `${s.kb.counts.boundaries} escalation rules · ~${s.kb.tokens} tokens`;
+  $("#kbWarn").innerHTML = s.kb.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("");
+  $("#keyState").textContent = s.secrets.GROQ_API_KEY
+    ? `Saved: ${s.secrets.GROQ_API_KEY}`
+    : "No key saved. Without one the agent falls back to a local model, if you have Ollama running.";
+  $("#tierInfo").textContent =
+    `${s.tier.name} · speech ${s.tier.stt_model} on ${s.tier.stt_device} · ` +
+    `voice ${s.tier.tts_engine} · about ${(s.tier.est_latency_ms/1000).toFixed(1)}s per reply. ${s.tier.note}`;
+  $("#tileName").textContent = s.settings.display_name;
+}
+
+/* ------------------------------------------------------------------ paint */
+function render(s){
+  state = s;
+  paintChain(s.stage);
+  paintLog(s.turns);
+  paintRight(s);
+  paintBanner(s);
+  paintPreflight(s);
+  paintSettings(s);
+  $("#runBtn").textContent = s.running ? "Stop" : "Start listening";
+  $("#runBtn").classList.toggle("stop", s.running);
+}
+
+/* ----------------------------------------------------------------- wiring */
+$("#runBtn").onclick  = () => send({type:"run", on: !state?.running});
+$("#demoBtn").onclick = () => send({type:"demo"});
+$("#setBtn").onclick  = () => $("#sheet").showModal();
+$("#closeSheet").onclick = () => { $("#sheet").close(); render(state); };
+$("#saveKb").onclick = () => {
+  send({type:"kb", text: $("#kbText").value});
+  send({type:"settings", values:{
+    wake_phrase: $("#wakePhrase").value,
+    capture_device: $("#capDev").value,
+    playback_device: $("#playDev").value,
+  }});
+  $("#kbSaved").textContent = "Saved";
+  setTimeout(() => $("#kbSaved").textContent = "", 1800);
+};
+$("#copyDisc").onclick = async () => {
+  await navigator.clipboard.writeText($("#disclosure").value);
+  $("#discCopied").textContent = "Copied";
+  setTimeout(() => $("#discCopied").textContent = "", 1800);
+};
+$("#saveKey").onclick = () => {
+  const v = $("#groqKey").value.trim();
+  if (!v) return;
+  send({type:"secret", name:"GROQ_API_KEY", value:v});
+  $("#groqKey").value = "";
+};
+
+connect();
+</script>
+</body>
+</html>
