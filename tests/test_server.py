@@ -154,3 +154,77 @@ async def test_transcript_is_capped(hub):
     for i in range(90):
         await hub.add_turn(speaker="room", text=f"line {i}")
     assert len(hub.snapshot()["turns"]) == 60
+
+
+# ------------------------------------------------------------- enrollment
+def _client(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    import quorum.server as srv
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    return TestClient(srv.app)
+
+
+def test_enroll_rejects_a_clip_that_is_too_short(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\0" * 500,
+                                                   "audio/wav")})
+    assert r.status_code == 400
+    assert "too short" in r.json()["error"]
+
+
+def test_enroll_rejects_the_wrong_container(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/enroll", files={"reference": ("voice.m4a", b"\0" * 40_000,
+                                                   "audio/mp4")})
+    assert r.status_code == 400
+    assert ".m4a" in r.json()["error"], "should name the format the user actually sent"
+
+
+def test_enroll_calls_the_engine_and_prerenders(monkeypatch, tmp_path):
+    import quorum.server as srv
+
+    class FakeVoice:
+        def __init__(self): self.enrolled_with = None; self.prerendered = []
+        def enroll(self, path): self.enrolled_with = Path(path).read_bytes()
+        def prerender(self, text): self.prerendered.append(text)
+
+    fake = FakeVoice()
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: fake)
+    c = _client(monkeypatch, tmp_path)
+
+    payload = b"RIFF" + b"\x01" * 40_000
+    r = c.post("/api/enroll", files={"reference": ("ref.wav", payload, "audio/wav")})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert fake.enrolled_with == payload, "the engine must see the uploaded bytes"
+    assert fake.prerendered == [srv.hub.settings.holding_line]
+
+
+def test_enroll_surfaces_engine_failure_instead_of_silently_passing(monkeypatch, tmp_path):
+    import quorum.server as srv
+
+    class BadVoice:
+        def enroll(self, path): raise RuntimeError("no CUDA device")
+        def prerender(self, text): pass
+
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: BadVoice())
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
+                                                   "audio/wav")})
+    assert r.status_code == 500
+    assert "no CUDA device" in r.json()["error"]
+    assert "enrollment" in srv.hub.last_error
+
+
+def test_enroll_cleans_up_the_temp_file(monkeypatch, tmp_path):
+    import tempfile
+    import quorum.server as srv
+
+    class FakeVoice:
+        def enroll(self, path): pass
+        def prerender(self, text): pass
+
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: FakeVoice())
+    c = _client(monkeypatch, tmp_path)
+    c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
+                                               "audio/wav")})
+    assert not (Path(tempfile.gettempdir()) / "quorum-ref.wav").exists()

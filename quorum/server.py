@@ -8,7 +8,10 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from pathlib import Path
+
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -157,6 +160,50 @@ app = FastAPI(title="quorum.ai")
 @app.get("/")
 async def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.post("/api/enroll")
+async def enroll(reference: UploadFile = File(...)):
+    """Accept a reference recording and compute the speaker latent once.
+
+    Runs off the event loop because conditioning takes a few seconds, and
+    writes the upload to a real file first — the TTS engines want a path.
+    """
+    import tempfile
+
+    data = await reference.read()
+    if len(data) < 32_000:
+        return JSONResponse(
+            {"ok": False, "error": "That clip is too short. Aim for 45 to 60 "
+                                   "seconds — reference length is most of what "
+                                   "determines how the clone sounds."},
+            status_code=400)
+
+    suffix = Path(reference.filename or "ref.wav").suffix.lower() or ".wav"
+    if suffix not in (".wav", ".flac"):
+        return JSONResponse(
+            {"ok": False, "error": f"Need a .wav or .flac file, got {suffix}. "
+                                   "Windows Voice Recorder saves .m4a — convert "
+                                   "it first."},
+            status_code=400)
+
+    tmp = Path(tempfile.gettempdir()) / f"quorum-ref{suffix}"
+    tmp.write_bytes(data)
+
+    try:
+        voice = tts.build_voice(hub.tier.tts_engine)
+        await asyncio.to_thread(voice.enroll, tmp)
+        await asyncio.to_thread(voice.prerender, hub.settings.holding_line)
+        hub.last_error = None
+    except Exception as e:
+        hub.last_error = f"enrollment: {e}"
+        await hub.broadcast()
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    await hub.broadcast()
+    return {"ok": True}
 
 
 @app.websocket("/ws")

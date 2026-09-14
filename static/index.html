@@ -267,7 +267,8 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
         <div class="desc" id="voiceNote"></div>
         <div class="script" id="voiceScript"></div>
         <div style="margin-top:9px">
-          <input type="file" id="refWav" accept="audio/wav">
+          <input type="file" id="refWav" accept=".wav,.flac,audio/wav,audio/flac">
+          <div class="tokens" id="enrollState"></div>
         </div>
       </div>
     </div>
@@ -550,6 +551,24 @@ $("#saveKb").onclick = () => {
   $("#kbSaved").textContent = "Saved";
   setTimeout(() => $("#kbSaved").textContent = "", 1800);
 };
+$("#refWav").onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const state = $("#enrollState");
+  state.textContent = "Analysing the recording. This takes a few seconds, and "
+    + "longer the first time while the model downloads.";
+  const body = new FormData();
+  body.append("reference", file);
+  try {
+    const res = await fetch("/api/enroll", {method: "POST", body});
+    const out = await res.json();
+    state.textContent = out.ok ? "Voice enrolled." : out.error;
+  } catch (err) {
+    state.textContent = "Upload failed: " + err.message;
+  }
+  e.target.value = "";
+};
+
 $("#copyDisc").onclick = async () => {
   await navigator.clipboard.writeText($("#disclosure").value);
   $("#discCopied").textContent = "Copied";

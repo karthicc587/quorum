@@ -7,6 +7,7 @@ Requires-Dist: fastapi>=0.110
 Requires-Dist: uvicorn[standard]>=0.29
 Requires-Dist: rapidfuzz>=3.6
 Requires-Dist: numpy>=1.26
+Requires-Dist: python-multipart>=0.0.9
 Provides-Extra: audio
 Requires-Dist: faster-whisper>=1.0; extra == "audio"
 Requires-Dist: sounddevice>=0.4; extra == "audio"

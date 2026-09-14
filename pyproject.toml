@@ -7,7 +7,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "rapidfuzz>=3.6",
-    "numpy>=1.26",
+    "numpy>=1.26",              # imported at module level by tts and pipeline
+    "python-multipart>=0.0.9",  # required by FastAPI for the enrollment upload
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,8 @@ voice = ["TTS>=0.22"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx", "playwright"]
 
 [tool.setuptools]
+# Without this, setuptools auto-discovery sees quorum/, static/ and voices/
+# as three competing top-level packages and refuses to build.
 packages = ["quorum"]
 
 [tool.pytest.ini_options]
