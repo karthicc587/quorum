@@ -36,6 +36,7 @@ class Decision:
     reason: str
     draft: str
     guard: str | None = None        # deterministic rule that forced this
+    improvised: bool = False        # generated rather than read from the KB
     latency_ms: int = 0
     raw: str = ""
     trace: list[str] = field(default_factory=list)
@@ -110,6 +111,31 @@ KNOWLEDGE BASE
 {kb}
 """
 
+IMPROVISE_PROMPT = """\
+You are standing in for Kartik in a meeting and he is not reachable. A
+question has come up that your notes do not cover, and saying nothing is not
+an option — you have to say something out loud, now.
+
+Answer as Kartik would in the moment: first person, one or two sentences,
+spoken not written.
+
+Do not invent specifics you were not given. No dates, numbers, names or
+commitments that are absent from the notes below. Where you do not know, say
+so the way a person does — "I'd have to check", "off the top of my head",
+"my sense is" — and keep moving. A vague honest answer is better than a
+confident wrong one, and the room can tell the difference.
+
+Reply with strict JSON and nothing else:
+{"tier":"answer","confidence":0.0-1.0,"reason":"<8 words max",\
+"draft":"<what to say aloud>"}
+
+Confidence is how well grounded the answer is in the notes. Something you
+made the shape of, rather than read off the page, is low.
+
+NOTES
+{kb}
+"""
+
 USER_PROMPT = """\
 Recent transcript:
 {transcript}
@@ -123,10 +149,38 @@ class LLM(Protocol):
 
 
 class Router:
-    def __init__(self, llm: LLM, kb: KB, threshold: float = 0.70):
+    def __init__(self, llm: LLM, kb: KB, threshold: float = 0.70,
+                 autonomy: str = "ask"):
         self.llm = llm
         self.kb = kb
         self.threshold = threshold
+        self.autonomy = autonomy
+
+    def improvise(self, utterance: str, transcript: list[str] | None = None) -> Decision:
+        """Produce something to say for a question the notes do not answer.
+
+        Only reached in improvise mode, and never a substitute for the guards:
+        a question that trips a deterministic rule still escalates, because
+        inventing a commitment in someone's name is the one failure this
+        project exists to avoid.
+        """
+        t0 = time.perf_counter()
+        system = IMPROVISE_PROMPT.replace("{kb}", self.kb.as_prompt())
+        user = USER_PROMPT.format(
+            transcript="\n".join(transcript or []) or "(nothing yet)",
+            utterance=utterance,
+        )
+        try:
+            d = _parse(self.llm.complete(system, user))
+        except Exception as e:
+            return Decision(Tier.ESCALATE, 0.0, f"improvise failed — {e}"[:80], "",
+                            latency_ms=int((time.perf_counter() - t0) * 1000),
+                            trace=["improvise:error"])
+        d.tier = Tier.ANSWER if d.draft.strip() else Tier.ESCALATE
+        d.improvised = True
+        d.trace = ["improvise", f"conf:{d.confidence:.2f}"]
+        d.latency_ms = int((time.perf_counter() - t0) * 1000)
+        return d
 
     def decide(self, utterance: str, transcript: list[str] | None = None) -> Decision:
         t0 = time.perf_counter()
@@ -151,9 +205,13 @@ class Router:
         try:
             raw = self.llm.complete(system, user)
         except Exception as e:
-            trace.append(f"llm-error:{type(e).__name__}")
+            # Keep the real message. "model unavailable" alone is unactionable —
+            # a missing key, an expired key, a rate limit and no network all
+            # look identical, and only the exception distinguishes them.
+            detail = str(e).strip() or type(e).__name__
+            trace.append(f"llm-error:{type(e).__name__}:{detail[:120]}")
             return Decision(
-                Tier.ESCALATE, 0.0, "model unavailable", "",
+                Tier.ESCALATE, 0.0, f"router unreachable — {detail[:80]}", "",
                 latency_ms=int((time.perf_counter() - t0) * 1000), trace=trace,
             )
 

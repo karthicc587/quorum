@@ -56,7 +56,8 @@ class FakeSTT:
 class FakeVoice:
     sample_rate = 24000
     enrolled = True
-    def __init__(self): self.said = []; self.prerendered = []
+    def __init__(self): self.said = []; self.prerendered = []; self.loaded = False
+    def load(self): self.loaded = True
     def prerender(self, t): self.prerendered.append(t)
     def say(self, text):
         self.said.append(text)
@@ -250,11 +251,29 @@ def test_transcript_window_is_bounded():
 
 
 def test_warm_loads_models_and_prerenders_holding_line():
+    """The voice model must load during warm-up, not on the first question.
+
+    Regression: warm() called prerender(), which returns early when the
+    holding line is already cached — so the multi-second weight load fell on
+    the first real question of the meeting.
+    """
     p, rec = build([], ANSWER)
     p.stt = FakeSTT([])
     p.warm()
     assert p.stt.loaded
+    assert p.voice.loaded, "weights must be resident before the meeting starts"
     assert Settings().holding_line in p.voice.prerendered
+
+
+def test_warm_loads_the_voice_even_when_the_holding_line_is_cached():
+    class CachedVoice(FakeVoice):
+        def prerender(self, t): pass          # already on disk, does nothing
+
+    p, rec = build([], ANSWER)
+    p.stt = FakeSTT([])
+    p.voice = CachedVoice()
+    p.warm()
+    assert p.voice.loaded, "a warm cache must not skip loading the model"
 
 
 def test_latency_report_shape():

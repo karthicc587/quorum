@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
+from quorum.evaluate import _fmt as format_report
 from quorum.evaluate import escalation, latency, report, wake
 from quorum.platforms import MEET, PLATFORMS, ZOOM, Preflight, get
 from quorum.telemetry import TurnLog, TurnRecord
@@ -209,10 +210,57 @@ def test_failures_counts_abandoned_escalations():
 
 def test_report_is_complete():
     r = report(_labelled())
-    assert set(r) == {"escalation", "wake", "latency_ms", "failures"}
+    assert set(r) == {"escalation", "modes", "wake", "latency_ms", "failures"}
 
 
 def test_empty_log_does_not_crash():
     r = report([])
     assert r["latency_ms"] == {}
     assert "note" in r["escalation"]
+
+
+# --------------------------------------------------------------- autonomy
+def _modes():
+    return [
+        TurnRecord(question="who is on the team", decision="answer", mode="ask",
+                   confidence=0.95, stt_ms=200, router_ms=600, tts_ms=1100),
+        TurnRecord(question="can you do Monday", decision="escalate", mode="ask",
+                   guard="commitment", stt_ms=210, router_ms=3, tts_ms=400),
+        TurnRecord(question="what did it conclude", decision="answer",
+                   mode="improvise", improvised=True, confidence=0.35,
+                   spoken="My sense is it favoured the incumbent, but I'd check.",
+                   stt_ms=205, router_ms=900, tts_ms=1200),
+        TurnRecord(question="how many pages", decision="answer",
+                   mode="improvise", improvised=True, confidence=0.8,
+                   spoken="It's a short one, a few pages.",
+                   stt_ms=200, router_ms=850, tts_ms=1150),
+        TurnRecord(question="can you do Monday", decision="escalate",
+                   mode="improvise", guard="commitment",
+                   stt_ms=210, router_ms=3, tts_ms=400),
+    ]
+
+
+def test_modes_are_never_pooled():
+    m = escalation(_modes())          # unlabelled, so no matrix
+    by = report(_modes())["modes"]
+    assert set(by) == {"ask", "improvise"}
+    assert by["ask"]["improvised"] == 0
+    assert by["improvise"]["improvised"] == 2
+
+
+def test_guarded_questions_still_escalate_in_improvise_mode():
+    by = report(_modes())["modes"]
+    assert by["improvise"]["escalated"] == 1, "the commitment guard must survive"
+
+
+def test_ungrounded_improvisations_are_counted_and_listed():
+    by = report(_modes())["modes"]
+    assert by["improvise"]["ungrounded"] == 1, "confidence 0.35 is ungrounded"
+    said = [x["said"] for x in by["improvise"]["lines_invented"]]
+    assert any("favoured the incumbent" in x for x in said)
+
+
+def test_mode_table_renders():
+    out = format_report(report(_modes()))
+    assert "BY MODE" in out and "improvise" in out
+    assert "INVENTED" in out

@@ -30,6 +30,7 @@ class Turn:
     speaker: str            # "room" | "agent" | "you"
     text: str
     tier: str | None = None
+    improvised: bool = False
     confidence: float | None = None
     guard: str | None = None
     reason: str | None = None
@@ -98,7 +99,11 @@ class Hub:
             "audio": self.audio_status(),
             "voice": {"enrolled": self.voice_enrolled(),
                       "engine": tts.engine_label(self.tier.tts_engine),
-                      "script": tts.REFERENCE_SCRIPT, "note": tts.ENROLLMENT_NOTE},
+                      "script": tts.REFERENCE_SCRIPT, "note": tts.ENROLLMENT_NOTE,
+                      "needs_license": self.tier.tts_engine == "xtts",
+                      "license_accepted": self.settings.xtts_license_accepted,
+                      "license_url": tts.XTTS_LICENSE_URL,
+                      "license_summary": tts.XTTS_LICENSE_SUMMARY},
             "latency": self.pipeline.latency_report() if self.pipeline else {},
             "error": self.last_error,
             "preflight": self.preflight.status(platforms.get(self.platform_id)),
@@ -107,10 +112,14 @@ class Hub:
 
     def audio_status(self) -> dict:
         try:
-            from .audio import diagnose
-            return diagnose()
+            from .audio import describe_index, diagnose
+            d = diagnose()
+            d["capture_label"] = describe_index(self.settings.capture_device)
+            d["playback_label"] = describe_index(self.settings.playback_device)
+            return d
         except Exception as e:
-            return {"ok": False, "problem": str(e), "devices": []}
+            return {"ok": False, "problem": str(e), "devices": [],
+                    "capture_candidates": [], "playback_candidates": []}
 
     def voice_enrolled(self) -> bool:
         try:
@@ -190,7 +199,15 @@ async def enroll(reference: UploadFile = File(...)):
     tmp = Path(tempfile.gettempdir()) / f"quorum-ref{suffix}"
     tmp.write_bytes(data)
 
+    if hub.tier.tts_engine == "xtts" and not hub.settings.xtts_license_accepted:
+        tmp.unlink(missing_ok=True)
+        return JSONResponse(
+            {"ok": False, "error": "Accept the XTTS model licence above before "
+                                   "enrolling a voice."},
+            status_code=400)
+
     try:
+        tts.accept_xtts_license()
         voice = tts.build_voice(hub.tier.tts_engine)
         await asyncio.to_thread(voice.enroll, tmp)
         await asyncio.to_thread(voice.prerender, hub.settings.holding_line)
@@ -255,6 +272,20 @@ async def handle(msg: dict):
                 except (TypeError, ValueError):
                     pass
         hub.settings.save()
+        await hub.broadcast()
+
+    elif kind == "license":
+        hub.settings.xtts_license_accepted = bool(msg.get("accepted"))
+        hub.settings.save()
+        await hub.broadcast()
+
+    elif kind == "autonomy":
+        mode = msg.get("mode")
+        if mode in ("ask", "improvise"):
+            hub.settings.autonomy = mode
+            hub.settings.save()
+            if hub.pipeline:
+                hub.pipeline.settings.autonomy = mode   # applies mid-meeting
         await hub.broadcast()
 
     elif kind == "platform":
@@ -323,6 +354,7 @@ def _build_pipeline():
         on_heard=lambda text, meta: spawn(hub.add_turn(speaker="room", text=text)),
         on_answer=lambda text, d, st: spawn(hub.add_turn(
             speaker="agent", text=text, tier="answer", confidence=d.confidence,
+            improvised=getattr(d, "improvised", False),
             reason=d.reason, stages=st.as_dict())),
         on_escalate=lambda q, d: spawn(_escalated(q, d)),
         on_error=on_error,
@@ -336,7 +368,8 @@ def _build_pipeline():
     return Pipeline(
         tier=hub.tier, settings=hub.settings, kb=hub.kb,
         router=Router(build_llm(hub.settings), hub.kb,
-                      hub.settings.escalate_below_confidence),
+                      hub.settings.escalate_below_confidence,
+                      autonomy=hub.settings.autonomy),
         voice=voice, hooks=hooks,
         capture_device=hub.settings.capture_device or None,
         playback_device=hub.settings.playback_device or None,

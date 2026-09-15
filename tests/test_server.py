@@ -228,3 +228,57 @@ def test_enroll_cleans_up_the_temp_file(monkeypatch, tmp_path):
     c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
                                                "audio/wav")})
     assert not (Path(tempfile.gettempdir()) / "quorum-ref.wav").exists()
+
+
+# --------------------------------------------------------------- licensing
+def test_enroll_blocked_until_the_model_licence_is_accepted(monkeypatch, tmp_path):
+    import quorum.server as srv
+
+    monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
+    srv.hub.settings.xtts_license_accepted = False
+    called = []
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e: called.append(e))
+
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
+                                                   "audio/wav")})
+    assert r.status_code == 400
+    assert "licence" in r.json()["error"]
+    assert not called, "the model must not load before the licence is accepted"
+
+
+def test_enroll_proceeds_once_accepted(monkeypatch, tmp_path):
+    import os
+    import quorum.server as srv
+
+    class FakeVoice:
+        def enroll(self, path): pass
+        def prerender(self, text): pass
+
+    monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e: FakeVoice())
+    monkeypatch.delenv("COQUI_TOS_AGREED", raising=False)
+    srv.hub.settings.xtts_license_accepted = True
+
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
+                                                   "audio/wav")})
+    assert r.status_code == 200
+    assert os.environ.get("COQUI_TOS_AGREED") == "1", \
+        "acceptance is only forwarded to the library after the user agrees"
+    srv.hub.settings.xtts_license_accepted = False
+
+
+def test_licence_state_is_exposed_and_settable(hub):
+    hub.tier.tts_engine = "xtts"
+    v = hub.snapshot()["voice"]
+    assert v["needs_license"] and not v["license_accepted"]
+    assert v["license_url"].startswith("https://")
+
+
+@pytest.mark.asyncio
+async def test_license_message_persists_the_choice(hub):
+    await handle({"type": "license", "accepted": True})
+    assert hub.settings.xtts_license_accepted
+    await handle({"type": "license", "accepted": False})
+    assert not hub.settings.xtts_license_accepted

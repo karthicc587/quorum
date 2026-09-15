@@ -165,6 +165,16 @@ before-and-after design.
 (upload works today), and the eval scripts that turn the per-turn logs into
 the confusion matrix.
 
+## Licensing
+
+The code here is yours. The XTTS-v2 **weights** are under the Coqui Public
+Model License — non-commercial use only. Coursework is fine; shipping it in
+anything commercial is not. The dashboard asks you to accept this before it
+will load the model, and that acceptance is what gets forwarded to the
+library.
+
+`coqui-tts` itself (the maintained Idiap fork) is MPL-2.0.
+
 ## Not in scope
 
 No work aimed at defeating detection. The disclosure label stays on.

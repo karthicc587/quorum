@@ -16,4 +16,4 @@ httpx
 playwright
 
 [voice]
-TTS>=0.22
+coqui-tts>=0.27

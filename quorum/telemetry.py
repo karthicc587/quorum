@@ -38,6 +38,8 @@ class TurnRecord:
     reason: str = ""
     spoken: str = ""
 
+    mode: str = "ask"           # ask | improvise, at the time of the turn
+    improvised: bool = False    # spoken line was generated, not from the KB
     escalated_to_human: bool = False
     human_reply: str | None = None
     human_latency_s: float | None = None

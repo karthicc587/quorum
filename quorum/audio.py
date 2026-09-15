@@ -97,6 +97,42 @@ INSTALL = {
 }
 
 
+# Host APIs in preference order, from measurement rather than reputation.
+# Probing a VoiceMeeter B-bus at the 16 kHz mono Whisper wants: MME opened and
+# carried audio, DirectSound opened, WASAPI refused outright — it will not
+# resample and only accepts the device's native rate. WDM-KS is exclusive-mode
+# and locks the device away from everything else.
+_API_RANK = {"MME": 0, "Windows DirectSound": 1, "Windows WASAPI": 2, "Windows WDM-KS": 3}
+
+
+def _api_of(d: Device) -> str:
+    sd = _sd()
+    return sd.query_hostapis(sd.query_devices()[d.index]["hostapi"])["name"]
+
+
+def _describe(devs: list[Device], kind: str) -> list[dict]:
+    """One entry per (name, host API), ranked so the safest choice is first.
+
+    Windows exposes each device once per host API, which turns six virtual
+    devices into thirty dropdown entries. We keep the index — names are not
+    unique and selecting by name is ambiguous — but sort so the entry most
+    likely to work is at the top.
+    """
+    out = []
+    for d in devs:
+        api = _api_of(d)
+        out.append({
+            "index": d.index,
+            "name": d.name,
+            "api": api,
+            "channels": d.inputs if kind == "input" else d.outputs,
+            "label": f"{d.name}  ·  {api}",
+            "recommended": api == "MME",
+        })
+    out.sort(key=lambda e: (_API_RANK.get(e["api"], 9), e["name"]))
+    return out
+
+
 def diagnose() -> dict:
     """Called by setup and by the dashboard. Never raises."""
     system = platform.system()
@@ -124,11 +160,46 @@ def diagnose() -> dict:
         "ok": problem is None,
         "problem": problem,
         "needs": name, "url": url, "note": note,
-        "capture_candidates": [d.name for d in v_in],
-        "playback_candidates": [d.name for d in v_out],
+        "capture_candidates": _describe(v_in, "input"),
+        "playback_candidates": _describe(v_out, "output"),
         "devices": [{"name": d.name, "in": d.inputs, "out": d.outputs,
                      "virtual": d.virtual} for d in devs],
     }
+
+
+def resolve(value) -> int | None:
+    """Turn a stored setting into a device index sounddevice can use.
+
+    Always an index, never a name. sounddevice matches names by substring, so
+    "Voicemeeter Input" also matches "Voicemeeter AUX Input" and it raises
+    rather than choosing. Indices are unambiguous.
+    """
+    if value in (None, "", "default"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    # A name left over from an older config: take the highest-ranked match.
+    want = str(value).lower()
+    matches = [d for d in devices() if want in d.name.lower()]
+    if not matches:
+        return None
+    matches.sort(key=lambda d: _API_RANK.get(_api_of(d), 9))
+    return matches[0].index
+
+
+def describe_index(index) -> str:
+    """Human label for whatever is currently selected."""
+    i = resolve(index)
+    if i is None:
+        return "the system default"
+    # Look up by the device's own index, not by list position. They coincide
+    # today, but relying on that turns any reordering into a silent mislabel.
+    d = next((x for x in devices() if x.index == i), None)
+    if d is None:
+        return f"device {index} (not found)"
+    return f"{d.name} ({_api_of(d)})"
 
 
 # ----------------------------------------------------------------- capture

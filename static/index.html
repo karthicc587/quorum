@@ -151,6 +151,12 @@ dialog::backdrop{background:rgba(21,27,36,.34)}
 .check .d{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:52ch}
 .check.crit .t::after{content:" — required";color:var(--wait);font-size:12px}
 .check.done .t{color:var(--muted)}
+.mode{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--surface)}
+.mode button{border:0;background:none;padding:5px 12px;font-size:13px;border-right:1px solid var(--line);white-space:nowrap}
+.mode button:last-child{border-right:0}
+.mode button[aria-pressed=true]{background:var(--ink);color:var(--surface)}
+.mode button[aria-pressed=true][data-mode=improvise]{background:var(--wait);border-color:var(--wait)}
+.improv{color:var(--wait)}
 .pill{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
 .pill.bad{border-color:var(--wait);color:var(--wait);background:#FEFBF4}
 .pill.good{border-color:var(--ok);color:var(--ok)}
@@ -198,7 +204,7 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
 
     <div class="right">
       <section class="panel" id="statePanel">
-        <h2>Agent</h2>
+        <h2>Agent <span class="mode" id="modeTabs"></span></h2>
         <div class="standby" id="standby"><span class="dot"></span><span id="standbyText">Idle</span></div>
       </section>
     </div>
@@ -263,6 +269,13 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
       <label>Voice</label>
       <div class="desc" id="voiceEngine"></div>
       <div class="status" id="voiceStatus"></div>
+      <div id="licenceBlock" style="margin-top:10px;display:none">
+        <div class="status bad" id="licenceText"></div>
+        <label class="check" style="border:0">
+          <input type="checkbox" id="licenceOk">
+          <span class="t">I accept the model licence and will keep this non-commercial</span>
+        </label>
+      </div>
       <div id="voiceEnroll" style="margin-top:10px;display:none">
         <div class="desc" id="voiceNote"></div>
         <div class="script" id="voiceScript"></div>
@@ -344,10 +357,20 @@ function paintLog(turns){
   log.innerHTML = turns.map(t => {
     const total = Object.values(t.stages || {}).reduce((a,b)=>a+b,0);
     const bits = [];
-    if (t.tier === "answer") bits.push(`<span><b>answered</b> ${(t.confidence??0).toFixed(2)}</span>`);
+    if (t.tier === "answer") bits.push(t.improvised
+      ? `<span class="improv"><b>improvised</b> ${(t.confidence??0).toFixed(2)}</span>`
+      : `<span><b>answered</b> ${(t.confidence??0).toFixed(2)}</span>`);
     if (t.tier === "escalate") bits.push(`<span class="esc"><b>escalated</b> ${t.guard || t.reason || ""}</span>`);
     if (t.tier === "human") bits.push(`<span><b>you answered</b></span>`);
-    if (total) bits.push(`<span>${(total/1000).toFixed(1)}s</span>`);
+    if (total) {
+      // Break the total down: a slow turn is almost always one stage, and
+      // "30s" alone does not say which one to go and fix.
+      const st = t.stages || {};
+      const parts = ["stt","router","tts"].filter(k => st[k])
+        .map(k => `${k} ${(st[k]/1000).toFixed(1)}`).join("  ");
+      const slow = total > 5000 ? ' style="color:var(--wait)"' : "";
+      bits.push(`<span${slow}><b>${(total/1000).toFixed(1)}s</b>${parts ? "  " + parts : ""}</span>`);
+    }
     return `<div class="turn ${t.speaker}">
       <div class="clock">${hhmm(t.t)}</div>
       <div class="text"><div class="who">${WHO[t.speaker]||t.speaker}</div>
@@ -392,12 +415,31 @@ function paintRight(s){
     stopClock();
     right.innerHTML = `
       <section class="panel" id="statePanel">
-        <h2>Agent</h2>
+        <h2>Agent <span class="mode" id="modeTabs"></span></h2>
         <div class="standby ${s.running ? "live":""}">
           <span class="dot"></span><span>${s.running ? "Listening for the wake phrase" : "Idle"}</span>
         </div>
+        <div class="standby" style="padding-top:0">${modeBlurb(s.settings.autonomy)}</div>
       </section>`;
+    paintMode(s);
   }
+}
+
+const MODE_BLURB = {
+  ask: "Questions outside your notes are handed back to you to answer.",
+  improvise: "Questions outside your notes are answered on the spot. It will "
+           + "sometimes say things you did not write down.",
+};
+const modeBlurb = m => MODE_BLURB[m] || "";
+
+function paintMode(s){
+  const el = $("#modeTabs");
+  if (!el) return;
+  el.innerHTML = [["ask","Ask me"],["improvise","Improvise"]].map(([id,label]) =>
+    `<button data-mode="${id}" aria-pressed="${s.settings.autonomy === id}">${label}</button>`
+  ).join("");
+  el.querySelectorAll("button").forEach(b =>
+    b.onclick = () => send({type:"autonomy", mode:b.dataset.mode}));
 }
 
 function wireEscalation(){
@@ -433,17 +475,26 @@ function paintBanner(s){
   $("#fixIt").onclick = () => $("#sheet").showModal();
 }
 
-function fillDevices(sel, names, current){
+function fillDevices(sel, items, current){
+  // Values are device indices. Names repeat across host APIs, and selecting
+  // by name is ambiguous enough that the audio layer refuses to guess.
   const el = $(sel);
   el.innerHTML = `<option value="">System default</option>` +
-    names.map(n => `<option${n === current ? " selected":""}>${escapeHtml(n)}</option>`).join("");
+    (items || []).map(d => {
+      const sel_ = String(d.index) === String(current) ? " selected" : "";
+      const tick = d.recommended ? "  ✓" : "";
+      return `<option value="${d.index}"${sel_}>${escapeHtml(d.label)}${tick}</option>`;
+    }).join("");
 }
 
 function paintAudio(s){
+  // Report the devices actually selected, not the first candidate found —
+  // showing a device the user did not pick makes routing bugs unfindable.
   const a = s.audio, el = $("#audioStatus");
   el.className = "status " + (a.ok ? "good" : "bad");
   el.innerHTML = a.ok
-    ? `Ready. Capturing from ${escapeHtml((a.capture_candidates||[])[0] || "the default device")}.`
+    ? `Ready. Capturing from ${escapeHtml(a.capture_label || "the system default")}, `
+      + `speaking to ${escapeHtml(a.playback_label || "the system default")}.`
     : `${escapeHtml(a.problem || "Audio unavailable.")}
        ${a.url ? `<br><a href="${a.url}" target="_blank" rel="noopener">Install ${escapeHtml(a.needs)}</a>` : ""}
        ${a.note ? `<span class="cmd">${escapeHtml(a.note)}</span>` : ""}`;
@@ -458,7 +509,16 @@ function paintVoice(s){
   el.textContent = s.voice.enrolled
     ? "A reference recording is saved. The agent speaks in your voice."
     : "No recording yet. The agent will use the fallback voice, which is not yours.";
-  $("#voiceEnroll").style.display = s.voice.enrolled ? "none" : "block";
+  const needsLicence = s.voice.needs_license && !s.voice.enrolled;
+  $("#licenceBlock").style.display = needsLicence ? "block" : "none";
+  if (needsLicence) {
+    $("#licenceText").innerHTML = escapeHtml(s.voice.license_summary) +
+      ` <a href="${s.voice.license_url}" target="_blank" rel="noopener">Read the licence</a>`;
+    $("#licenceOk").checked = s.voice.license_accepted;
+    $("#licenceOk").onchange = e => send({type:"license", accepted: e.target.checked});
+  }
+  const blocked = needsLicence && !s.voice.license_accepted;
+  $("#voiceEnroll").style.display = (s.voice.enrolled || blocked) ? "none" : "block";
   $("#voiceNote").textContent = s.voice.note;
   $("#voiceScript").innerHTML = s.voice.script.map(l => `<div>${escapeHtml(l)}</div>`).join("");
 }
@@ -504,10 +564,13 @@ function paintPlatform(s){
 function paintSettings(s){
   // The checklist has to repaint even with the sheet open — switching
   // platform happens inside the sheet, and the steps are what changes.
+  // These two repaint even with the sheet open: both are driven by state the
+  // user changes from inside it (platform tabs, the licence tick), and
+  // skipping the repaint leaves the panel showing the pre-click state.
   paintPlatform(s);
+  paintVoice(s);
   if ($("#sheet").open) return;             // don't clobber mid-edit
   paintAudio(s);
-  paintVoice(s);
   $("#kbText").value = s.kb.text;
   $("#wakePhrase").value = s.settings.wake_phrase;
   $("#kbTokens").textContent =

@@ -197,3 +197,245 @@ def test_guard_recall_on_guardable_fixtures():
                 if n.startswith("guard:")]
     missed = [(u, g) for u, g in expected if guard_check(u) != g]
     assert not missed, missed
+
+
+# ------------------------------------------------- tier / GPU availability
+def test_cpu_only_torch_does_not_get_the_cuda_tier(monkeypatch):
+    """A GPU being present is not the same as PyTorch being able to use it."""
+    from quorum import config
+
+    monkeypatch.setattr(config, "_has_cuda", lambda: (True, 8192))
+    monkeypatch.setattr(config, "_torch_sees_cuda",
+                        lambda: (False, "PyTorch 2.14.0+cpu cannot use the GPU"))
+    t = config.detect_tier()
+    assert t.name == "cpu"
+    assert "8192MB GPU was found but is unused" in t.note
+    assert "cannot use the GPU" in t.note
+
+
+def test_working_cuda_gets_the_cuda_tier(monkeypatch):
+    from quorum import config
+
+    monkeypatch.setattr(config, "_has_cuda", lambda: (True, 8192))
+    monkeypatch.setattr(config, "_torch_sees_cuda", lambda: (True, ""))
+    assert config.detect_tier().name == "cuda"
+
+
+def test_small_gpu_falls_back_without_consulting_torch(monkeypatch):
+    from quorum import config
+
+    monkeypatch.setattr(config, "_has_cuda", lambda: (True, 4096))
+    monkeypatch.setattr(config, "_torch_sees_cuda",
+                        lambda: (_ for _ in ()).throw(AssertionError("should not be called")))
+    assert config.detect_tier().name in ("cpu", "apple")
+
+
+def test_tier_override_is_respected(monkeypatch):
+    from quorum import config
+    assert config.detect_tier("cuda").name == "cuda"
+    with pytest.raises(ValueError):
+        config.detect_tier("nonsense")
+
+
+def test_cuda_dll_helper_is_a_noop_off_windows(monkeypatch):
+    import os
+    from quorum import stt
+    monkeypatch.setattr(os, "name", "posix")
+    assert stt.add_cuda_dll_dirs() == []
+
+
+# ------------------------------------------------------- router error detail
+def test_router_error_keeps_the_real_message():
+    """'model unavailable' alone cannot distinguish a bad key from no network."""
+    from quorum import kb as kbmod
+    from quorum.router import Router
+
+    class Boom:
+        def complete(self, s, u):
+            raise RuntimeError("HTTP 401 — the API key was rejected")
+
+    d = Router(Boom(), kbmod.parse(kbmod.TEMPLATE)).decide("who is on the team")
+    assert d.tier is Tier.ESCALATE
+    assert "401" in d.reason
+    assert any("llm-error" in t and "401" in t for t in d.trace)
+
+
+def test_http_errors_are_translated_to_advice():
+    import io
+    import urllib.error
+    from quorum import backends
+
+    def boom(*a, **k):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"{}"))
+
+    import urllib.request
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = boom
+    try:
+        with pytest.raises(RuntimeError) as ei:
+            backends._post("https://api.groq.com/x", {}, {})
+        assert "401" in str(ei.value) and "key was rejected" in str(ei.value)
+    finally:
+        urllib.request.urlopen = orig
+
+
+# --------------------------------------------------- groq model rotation
+def test_groq_falls_through_retired_models(monkeypatch):
+    """Groq retires model names on a schedule; a stale default must not be fatal."""
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: "gsk_test")
+    llm = backends.GroqLLM(Settings(groq_model="llama-3.3-70b-versatile"))
+
+    calls = []
+
+    def fake(model, key, system, user, strict_json=True):
+        calls.append(model)
+        if model == "llama-3.3-70b-versatile":
+            raise RuntimeError("HTTP 403 — the API key is not permitted to use this model")
+        return '{"tier":"answer","confidence":1.0,"draft":"hi"}'
+
+    monkeypatch.setattr(llm, "_call", fake)
+    assert "hi" in llm.complete("s", "u")
+    assert calls[0] == "llama-3.3-70b-versatile"
+    assert llm.model == "openai/gpt-oss-120b", "should stick with what worked"
+
+
+def test_a_real_error_is_not_retried(monkeypatch):
+    """A bad key must surface immediately, not after trying four models."""
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: "gsk_test")
+    llm = backends.GroqLLM(Settings())
+    calls = []
+
+    def fake(model, key, system, user, strict_json=True):
+        calls.append(model)
+        raise RuntimeError("HTTP 429 — rate limited by the free tier")
+
+    monkeypatch.setattr(llm, "_call", fake)
+    with pytest.raises(RuntimeError, match="429"):
+        llm.complete("s", "u")
+    assert len(calls) == 1
+
+
+def test_all_models_gone_gives_actionable_advice(monkeypatch):
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: "gsk_test")
+    llm = backends.GroqLLM(Settings())
+    monkeypatch.setattr(llm, "_call", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("HTTP 404 — model_not_found")))
+
+    with pytest.raises(RuntimeError) as ei:
+        llm.complete("s", "u")
+    assert "console.groq.com/docs/models" in str(ei.value)
+
+
+def test_missing_key_is_reported_before_any_call(monkeypatch):
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: None)
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY missing"):
+        backends.GroqLLM(Settings()).complete("s", "u")
+
+
+def test_requests_identify_themselves(monkeypatch):
+    """Default urllib UA is blocked by Cloudflare before reaching the API."""
+    import io
+    import urllib.request
+    from quorum import backends
+
+    seen = {}
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.update(req.headers)
+        return FakeResp(b'{"ok": true}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    backends._post("https://api.groq.com/x", {}, {"Authorization": "Bearer k"})
+
+    ua = seen.get("User-agent", "")
+    assert ua and "quorum" in ua.lower()
+    assert "python-urllib" not in ua.lower()
+
+
+def test_cloudflare_block_is_not_reported_as_an_auth_problem(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+    from quorum import backends
+
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(
+            "u", 403, "Forbidden", {}, io.BytesIO(b"error code: 1010"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError) as ei:
+        backends._post("https://api.groq.com/x", {}, {})
+    msg = str(ei.value)
+    assert "Cloudflare" in msg
+    assert "key" not in msg.lower(), "must not send the user chasing the API key"
+
+
+def test_non_json_error_body_is_preserved(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+    from quorum import backends
+
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(
+            "u", 502, "Bad Gateway", {}, io.BytesIO(b"<html>upstream down</html>"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match="upstream down"):
+        backends._post("https://api.groq.com/x", {}, {})
+
+
+def test_json_mode_rejection_retries_without_it(monkeypatch):
+    """Reasoning models emit thinking tokens, which Groq's json_object
+    validator rejects. The router's parser recovers JSON from prose anyway."""
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: "gsk_test")
+    llm = backends.GroqLLM(Settings())
+    calls = []
+
+    def fake(model, key, system, user, strict_json=True):
+        calls.append(strict_json)
+        if strict_json:
+            raise RuntimeError("HTTP 400: Failed to validate JSON. Please adjust your prompt.")
+        return 'Sure! {"tier":"answer","confidence":0.9,"draft":"hi"}'
+
+    monkeypatch.setattr(llm, "_call", fake)
+    assert "hi" in llm.complete("s", "u")
+    assert calls == [True, False], "strict first, then relaxed"
+    assert llm.strict_json is False, "should stop retrying strict mode"
+
+
+def test_a_400_unrelated_to_json_is_not_retried(monkeypatch):
+    from quorum import backends
+    from quorum.config import Settings
+
+    monkeypatch.setattr(backends, "get_secret", lambda n: "gsk_test")
+    llm = backends.GroqLLM(Settings())
+    calls = []
+
+    def fake(model, key, system, user, strict_json=True):
+        calls.append(strict_json)
+        raise RuntimeError("HTTP 400: messages must not be empty")
+
+    monkeypatch.setattr(llm, "_call", fake)
+    with pytest.raises(RuntimeError, match="must not be empty"):
+        llm.complete("s", "u")
+    assert calls == [True], "only a JSON-mode failure justifies a retry"

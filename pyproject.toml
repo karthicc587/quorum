@@ -14,7 +14,21 @@ dependencies = [
 [project.optional-dependencies]
 # installed by setup.sh once your hardware tier is known
 audio = ["faster-whisper>=1.0", "sounddevice>=0.4", "silero-vad>=5.1"]
-voice = ["TTS>=0.22"]
+# The original Coqui `TTS` package is unmaintained and caps at Python <3.12.
+# `coqui-tts` is the maintained Idiap fork: same `TTS` module, same API,
+# supports 3.10 through 3.14. The XTTS-v2 weights are still CPML — non-
+# commercial use only.
+# coqui-tts declares transformers>=4.57 with no upper bound, so pip resolves
+# to 5.x, which removed `isin_mps_friendly` — an import XTTS still needs.
+# Verified: 4.57.1 has it, 5.0 does not. Pin until upstream catches up.
+# torchcodec: from torch 2.9 audio IO moved out of torch into this library,
+# and coqui-tts does not pull it in by default. Windows cp313 wheels exist.
+# soundfile carries a bundled libsndfile, so the reference clip loads without
+# FFmpeg system libraries. torchcodec is listed because torch 2.9 expects it,
+# but tts.py falls back to soundfile when its DLLs cannot load — which on
+# Windows is the common case.
+voice = ["coqui-tts>=0.27", "transformers>=4.57,<5", "torchcodec>=0.9",
+         "soundfile>=0.12"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx", "playwright"]
 
 [tool.setuptools]

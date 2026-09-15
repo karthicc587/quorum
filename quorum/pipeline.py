@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .audio import Capture, Playback
+from .audio import Capture, Playback, resolve
 from .config import Settings, Tier
 from .gate import Gate, State
 from .kb import KB
@@ -64,8 +64,8 @@ class Pipeline:
         self.echo = EchoGuard(threshold=settings.echo_suppress_threshold)
         self.segmenter = Segmenter(close_ms=settings.vad_close_ms)
         self.stt = Transcriber(tier.stt_model, tier.stt_device, tier.stt_compute)
-        self.capture = Capture(capture_device)
-        self.playback = Playback(playback_device, voice.sample_rate)
+        self.capture = Capture(resolve(capture_device))
+        self.playback = Playback(resolve(playback_device), voice.sample_rate)
 
         self.log = log or TurnLog()
         self.transcript: list[str] = []
@@ -84,6 +84,11 @@ class Pipeline:
         self.hooks.on_stage("warming")
         self.stt.load()
         if self.voice.enrolled:
+            # Load the weights explicitly. Relying on prerender to do it is a
+            # trap: once the holding line is cached, prerender returns without
+            # touching the model, and the multi-second load lands on the first
+            # real question of the meeting instead.
+            self.voice.load()
             self.voice.prerender(self.settings.holding_line)
 
     def start(self):
@@ -148,7 +153,7 @@ class Pipeline:
 
         rec = TurnRecord(heard=utt.text, wake_score=hit.score,
                          wake_fired=hit.matched, stt_ms=utt.stt_ms,
-                         audio_ms=utt.audio_ms)
+                         audio_ms=utt.audio_ms, mode=self.settings.autonomy)
         if not hit.matched or not self.gate.on_wake():
             self._record(rec)
             return
@@ -180,6 +185,25 @@ class Pipeline:
             self.turns.append(stages)
             self._record(rec)
             return
+
+        # In improvise mode, try to answer rather than hand back — but only
+        # for questions the guards let through. A guarded question escalates
+        # in either mode: those are the ones where a wrong answer is costly.
+        if self.settings.autonomy == "improvise" and not decision.guard:
+            improvised = self.router.improvise(question, self.transcript[:-1])
+            rec.router_ms += improvised.latency_ms
+            stages.router = rec.router_ms
+            if improvised.tier is Decision.ANSWER:
+                rec.decision = "answer"
+                rec.improvised = True
+                rec.confidence = improvised.confidence
+                rec.reason = improvised.reason
+                self._speak(improvised.draft, stages, rec)
+                rec.spoken = improvised.draft
+                self.hooks.on_answer(improvised.draft, improvised, stages)
+                self.turns.append(stages)
+                self._record(rec)
+                return
 
         # Escalation: holding line first so the meeting does not stall.
         self.gate.on_escalate()

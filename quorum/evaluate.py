@@ -176,9 +176,46 @@ def failures(records: list[TurnRecord]) -> dict:
     }
 
 
+def by_mode(records: list[TurnRecord]) -> dict:
+    """Deferential vs autonomous, side by side.
+
+    The claim under test is that bounded autonomy is acceptable. That only
+    means something against the alternative, so the two modes are never
+    pooled: improvised answers are counted separately and the ungrounded ones
+    are listed in full, because a confident invention in someone's name is
+    the specific failure this project is about.
+    """
+    out = {}
+    for mode in ("ask", "improvise"):
+        rs = [r for r in records if r.mode == mode and r.decision]
+        if not rs:
+            continue
+        improvised = [r for r in rs if r.improvised]
+        spoke = [r for r in rs if r.decision == "answer"]
+        low = [r for r in improvised if (r.confidence or 0) < 0.5]
+        out[mode] = {
+            "turns": len(rs),
+            "spoke": len(spoke),
+            "escalated": sum(r.decision == "escalate" for r in rs),
+            "improvised": len(improvised),
+            "improvised_share": round(len(improvised) / len(rs), 2),
+            "ungrounded": len(low),
+            "mean_confidence": round(
+                sum(r.confidence or 0 for r in spoke) / len(spoke), 2) if spoke else None,
+            "median_response_ms": percentile([r.responsive_ms for r in rs], .5),
+            "lines_invented": [
+                {"question": r.question, "said": r.spoken,
+                 "confidence": r.confidence}
+                for r in improvised
+            ][:20],
+        }
+    return out
+
+
 def report(records: list[TurnRecord]) -> dict:
     return {
         "escalation": escalation(records),
+        "modes": by_mode(records),
         "wake": wake(records),
         "latency_ms": latency(records),
         "failures": failures(records),
@@ -207,6 +244,21 @@ def _fmt(report_: dict) -> str:
         for s in e["slipped_through"]:
             lines.append(f"  SLIPPED: {s['question']!r} -> {s['said']!r} "
                          f"(conf {s['confidence']})")
+
+    m = report_.get("modes") or {}
+    if m:
+        lines.append("\nBY MODE")
+        lines.append(f"  {'':<11}{'turns':>6}{'spoke':>7}{'escal':>7}"
+                     f"{'improv':>8}{'ungrnd':>8}{'conf':>7}{'ms':>8}")
+        for name, v in m.items():
+            conf = f"{v['mean_confidence']:.2f}" if v["mean_confidence"] is not None else "—"
+            lines.append(f"  {name:<11}{v['turns']:>6}{v['spoke']:>7}"
+                         f"{v['escalated']:>7}{v['improvised']:>8}"
+                         f"{v['ungrounded']:>8}{conf:>7}{v['median_response_ms']:>8.0f}")
+        for name, v in m.items():
+            for x in v["lines_invented"][:5]:
+                lines.append(f"  INVENTED [{name}] {x['question']!r} -> "
+                             f"{x['said']!r} (conf {x['confidence']})")
 
     w = report_["wake"]
     lines.append("\nWAKE PHRASE")

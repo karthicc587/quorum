@@ -11,12 +11,46 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from .audio import SAMPLE_RATE
 
 VAD_WINDOW = 512            # samples; Silero wants exactly this at 16 kHz
+
+
+def add_cuda_dll_dirs() -> list[str]:
+    """Make CUDA libraries findable on Windows without editing PATH.
+
+    faster-whisper loads cuBLAS and cuDNN through ctranslate2, which uses the
+    plain Windows DLL search path. The pip wheels install those DLLs inside
+    site-packages where that search never looks, so you get
+    "cublas64_12.dll is not found" even though the file is on disk. Adding the
+    directories explicitly is the fix, and it beats telling every user to edit
+    their environment variables.
+
+    No-op off Windows, where the loader handles this itself.
+    """
+    import os
+    import sys
+
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return []
+
+    added = []
+    for mod in ("nvidia.cublas.lib", "nvidia.cudnn.bin", "nvidia.cudnn.lib", "torch.lib"):
+        parts = mod.split(".")
+        for base in sys.path:
+            cand = Path(base).joinpath(*parts)
+            if cand.is_dir():
+                try:
+                    os.add_dll_directory(str(cand))
+                    added.append(str(cand))
+                except OSError:
+                    pass
+                break
+    return added
 
 
 @dataclass
@@ -116,8 +150,24 @@ class Transcriber:
                 raise RuntimeError(
                     "faster-whisper is not installed. Run: pip install -e '.[audio]'"
                 ) from e
-            self._m = WhisperModel(self.name, device=self.device,
-                                   compute_type=self.compute_type)
+
+            if self.device == "cuda":
+                add_cuda_dll_dirs()
+            try:
+                self._m = WhisperModel(self.name, device=self.device,
+                                       compute_type=self.compute_type)
+            except Exception as e:
+                if self.device != "cuda":
+                    raise
+                # Falling back beats failing: a slower transcriber still runs
+                # the meeting, and the dashboard reports the downgrade.
+                raise RuntimeError(
+                    f"Could not start speech recognition on the GPU: {e}\n"
+                    "This is usually a CUDA library that Windows cannot find. "
+                    "Run: pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
+                    "If you have a CPU-only build of PyTorch, reinstall it with "
+                    "CUDA support or switch to the cpu tier."
+                ) from e
         return self._m
 
     def transcribe(self, audio: np.ndarray, started_at: float) -> Utterance:

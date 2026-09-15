@@ -6,7 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,14 +124,41 @@ def _has_cuda() -> tuple[bool, int]:
         return False, 0
 
 
+def _torch_sees_cuda() -> tuple[bool, str]:
+    """A GPU in the machine is not the same as a build that can use it.
+
+    pip installs a CPU-only PyTorch by default on Windows, so nvidia-smi
+    reporting a card tells you nothing about whether anything will run on it.
+    Checking only nvidia-smi picks the cuda tier and then fails at load time
+    with a missing-DLL error that looks unrelated.
+    """
+    try:
+        import torch
+    except ImportError:
+        return False, "PyTorch is not installed yet"
+    if torch.cuda.is_available():
+        return True, ""
+    build = "CPU-only build" if "+cpu" in torch.__version__ else "no usable CUDA device"
+    return False, (
+        f"PyTorch {torch.__version__} cannot use the GPU ({build}). Reinstall "
+        "with CUDA support from https://pytorch.org/get-started/locally/ to "
+        "get GPU speed; running on CPU otherwise."
+    )
+
+
 def detect_tier(override: str | None = None) -> Tier:
     if override:
         if override not in TIERS:
             raise ValueError(f"unknown tier {override!r}; pick from {list(TIERS)}")
         return TIERS[override]
+
     cuda, vram = _has_cuda()
     if cuda and vram >= 7000:
-        return TIERS["cuda"]
+        usable, why = _torch_sees_cuda()
+        if usable:
+            return TIERS["cuda"]
+        t = replace(TIERS["cpu"], note=f"A {vram}MB GPU was found but is unused. {why}")
+        return t
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         return TIERS["apple"]
     return TIERS["cpu"]
@@ -156,11 +183,18 @@ class Settings:
     echo_suppress_threshold: int = 85 # drop transcript matching our own speech
     transcript_window: int = 8        # turns of context handed to the router
     escalation_timeout_s: int = 180   # give up waiting for a typed reply
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Groq retires model names on a schedule — llama-3.3-70b-versatile was
+    # decommissioned in August 2026 and is now enterprise-only, which shows up
+    # as a 403 rather than a 404. GROQ_FALLBACKS below covers the next rotation.
+    groq_model: str = "openai/gpt-oss-120b"
     ollama_model: str = "qwen2.5:7b-instruct-q4_K_M"
     holding_line: str = "Let me check on that and come back to you."
     display_name: str = "AI Agent — Kartik"
     platform: str = "meet"            # meet | zoom
+    # ask       — refuse, play the holding line, wait for a typed reply
+    # improvise — answer anyway, from context, without waiting
+    autonomy: str = "ask"
+    xtts_license_accepted: bool = False
     capture_device: str = ""          # substring match; blank = system default
     playback_device: str = ""
 
