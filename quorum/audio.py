@@ -215,6 +215,60 @@ def describe_index(index) -> str:
     return f"{d.name} ({_api_of(d)})"
 
 
+def level_check(device=None, seconds: float = 2.0) -> dict:
+    """Listen to the capture device and report what actually arrived.
+
+    Splits the two failures that look identical from outside: audio not
+    reaching the app at all, versus arriving too quietly for the voice
+    detector to treat as speech. A VoiceMeeter meter moving proves neither,
+    because it shows the bus, not what this process opened.
+    """
+    idx = resolve(device)
+    try:
+        sd = _sd()
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+
+    import numpy as np
+
+    frames = int(SAMPLE_RATE * seconds)
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                            device=idx, blocksize=BLOCK) as stream:
+            chunks, got = [], 0
+            while got < frames:
+                block, overflowed = stream.read(min(BLOCK, frames - got))
+                chunks.append(block[:, 0].copy())
+                got += len(block)
+        audio = np.concatenate(chunks) if chunks else np.zeros(1, dtype="float32")
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "device": describe_index(device)}
+
+    peak = float(np.abs(audio).max())
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+
+    # Thresholds from measurement, not taste: Silero reliably fires above
+    # about 0.02 RMS, and Whisper degrades quietly below it rather than
+    # failing, which is what makes a low level so hard to spot.
+    if peak < 0.0005:
+        verdict = ("Silence. The app opened the device but nothing is coming "
+                   "through it — check the meeting client's speaker is set to "
+                   "the Aux bus, and that the strip feeding B2 is lit.")
+    elif rms < 0.01:
+        verdict = (f"Very quiet (peak {peak:.3f}). Audio is arriving but is "
+                   "probably too low for speech detection. Raise the fader on "
+                   "the strip feeding B2.")
+    elif rms < 0.02:
+        verdict = f"Quiet but usable (peak {peak:.3f}). A few dB more would help."
+    else:
+        verdict = f"Good signal (peak {peak:.3f})."
+
+    return {"ok": True, "peak": round(peak, 4), "rms": round(rms, 4),
+            "device": describe_index(device), "verdict": verdict,
+            "usable": rms >= 0.01}
+
+
 # ----------------------------------------------------------------- capture
 class Capture:
     """Mono 16 kHz float32 blocks off the loopback device."""

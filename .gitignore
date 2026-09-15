@@ -2,6 +2,7 @@
 .quorum/
 shots/
 voices/
+surveys/
 __pycache__/
 *.pyc
 .venv/

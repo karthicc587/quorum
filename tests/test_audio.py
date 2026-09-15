@@ -89,3 +89,65 @@ def test_expanded_labels_name_the_host_api():
     same = [e for e in out if e["name"].startswith("Voicemeeter Input")]
     assert len(same) == 2
     assert same[0]["label"] != same[1]["label"]
+
+
+# ------------------------------------------------------------ level check
+def _fake_stream(monkeypatch, samples):
+    """Stand in for sounddevice.InputStream, yielding fixed audio."""
+    import numpy as np
+    from quorum import audio as a
+
+    class Stream:
+        def __init__(self, **kw): self.kw = kw; self.pos = 0
+        def __enter__(self): return self
+        def __exit__(self, *x): return False
+        def read(self, n):
+            chunk = samples[self.pos:self.pos + n]
+            self.pos += n
+            if len(chunk) < n:
+                chunk = np.pad(chunk, (0, n - len(chunk)))
+            return chunk.reshape(-1, 1), False
+
+    monkeypatch.setattr(a, "_sd", lambda: type("sd", (), {"InputStream": Stream}))
+    monkeypatch.setattr(a, "describe_index", lambda v: "Voicemeeter Out B2 (MME)")
+
+
+def test_silence_is_named_as_silence(monkeypatch):
+    import numpy as np
+    _fake_stream(monkeypatch, np.zeros(40000, dtype="float32"))
+    r = audio.level_check(5, seconds=0.5)
+    assert r["ok"] and not r["usable"]
+    assert "Silence" in r["verdict"]
+    assert "speaker" in r["verdict"], "should point at the likely cause"
+
+
+def test_quiet_audio_is_distinguished_from_silence(monkeypatch):
+    """The failure that matters: Whisper degrades quietly rather than erroring."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    _fake_stream(monkeypatch, (rng.standard_normal(40000) * 0.004).astype("float32"))
+    r = audio.level_check(5, seconds=0.5)
+    assert r["ok"] and not r["usable"]
+    assert "Very quiet" in r["verdict"] and "fader" in r["verdict"]
+
+
+def test_good_signal_reports_usable(monkeypatch):
+    import numpy as np
+    rng = np.random.default_rng(1)
+    _fake_stream(monkeypatch, (rng.standard_normal(40000) * 0.15).astype("float32"))
+    r = audio.level_check(5, seconds=0.5)
+    assert r["ok"] and r["usable"] and "Good signal" in r["verdict"]
+
+
+def test_device_that_will_not_open_reports_why(monkeypatch):
+    from quorum import audio as a
+
+    class Boom:
+        class InputStream:
+            def __init__(self, **kw): raise OSError("Invalid sample rate")
+
+    monkeypatch.setattr(a, "_sd", lambda: Boom)
+    monkeypatch.setattr(a, "describe_index", lambda v: "some device")
+    r = a.level_check(5, seconds=0.2)
+    assert not r["ok"] and "Invalid sample rate" in r["error"]
+    assert r["device"] == "some device"

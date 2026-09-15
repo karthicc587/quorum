@@ -56,7 +56,9 @@ class JoinState(str, Enum):
 
 
 _MEET = re.compile(r"https?://meet\.google\.com/([a-z]{3}-[a-z]{4}-[a-z]{3})", re.I)
-_ZOOM = re.compile(r"https?://[\w.-]*zoom\.us/[jw]/(\d+)", re.I)
+# /j/ and /w/ are invite links; /wc/<id>/join is the web client we rewrite to,
+# and classify has to recognise its own output.
+_ZOOM = re.compile(r"https?://[\w.-]*zoom\.us/(?:[jw]|wc)/(\d+)", re.I)
 
 
 def classify(url: str) -> tuple[Platform, str | None]:
@@ -69,13 +71,32 @@ def classify(url: str) -> tuple[Platform, str | None]:
 
 
 def normalize(url: str) -> str:
-    """Strip tracking and auth params that break a clean join."""
+    """Clean the link, and send Zoom straight to its web client.
+
+    A plain zoom.us/j/<id> link lands on a "Launch Meeting" interstitial whose
+    whole job is to hand off to the desktop app. The browser client is behind
+    a link that is sometimes rendered late and sometimes not at all. Rewriting
+    to /wc/<id>/join skips the interstitial entirely, and carries the passcode
+    across, which is the other thing that silently fails.
+    """
     url = (url or "").strip()
     if not url:
         return ""
     if not url.startswith("http"):
         url = "https://" + url
-    return url.split("?")[0] if "meet.google.com" in url else url
+
+    if "meet.google.com" in url:
+        return url.split("?")[0]
+
+    m = _ZOOM.search(url)
+    if m:
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(url)
+        pwd = parse_qs(parsed.query).get("pwd", [""])[0]
+        host = parsed.netloc
+        wc = f"https://{host}/wc/{m.group(1)}/join"
+        return f"{wc}?pwd={pwd}" if pwd else wc
+    return url
 
 
 @dataclass
@@ -107,24 +128,51 @@ MEET_SELECTORS = {
 }
 
 ZOOM_SELECTORS = {
-    "name_field": ['#input-for-name', 'input[placeholder*="name" i]'],
-    "join": ['button:has-text("Join")', '#joinBtn'],
-    "in_call": ['[aria-label*="Leave" i]', 'button:has-text("Leave")'],
-    "lobby": ['text=Please wait, the meeting host', 'text=waiting room'],
-    "chat_open": ['[aria-label*="open the chat" i]', 'button[aria-label*="Chat" i]'],
-    "chat_box": ['textarea[aria-label*="Type message" i]', 'div[contenteditable="true"]'],
+    # The interstitial, in case the /wc/ rewrite did not take.
+    "browser_link": ['text=Join from your browser', 'a:has-text("Join from Your Browser")',
+                     'text=Launch Meeting'],
+    "consent": ['button:has-text("I Agree")', 'button:has-text("Agree")',
+                '#wc_agree1'],
+    "name_field": ['#input-for-name', '#inputname', 'input[placeholder*="name" i]'],
+    "passcode": ['#input-for-pwd', '#inputpasscode', 'input[type="password"]'],
+    "join": ['button:has-text("Join")', '#joinBtn', 'button[type="submit"]'],
+    "in_call": ['[aria-label*="Leave" i]', 'button:has-text("Leave")',
+                '[aria-label*="Mute" i]', 'button:has-text("Unmute")',
+                '#foot-bar', '.footer__leave-btn', '[class*="footer-button"]',
+                '#wc-container-right', '[class*="meeting-client"]'],
+    "lobby": ['text=Please wait, the meeting host', 'text=waiting room',
+              'text=Waiting for the host'],
+    "chat_open": ['[aria-label*="open the chat" i]', 'button[aria-label*="Chat" i]',
+                  '[aria-label="Chat"]'],
+    "chat_box": ['textarea[aria-label*="Type message" i]',
+                 'div[contenteditable="true"]', 'textarea.chat-box__chat-textarea'],
 }
 
 
+def _frames(page):
+    """The page plus every iframe.
+
+    Zoom's web client runs inside an iframe, so a locator scoped to the top
+    document finds nothing and the join looks like a missing button.
+    """
+    out = [page]
+    try:
+        out.extend(f for f in page.frames if f != page.main_frame)
+    except Exception:
+        pass
+    return out
+
+
 def _first(page, candidates, timeout_ms=2500):
-    """Return the first selector that resolves, or None. Never raises."""
+    """First selector that resolves, searching inside iframes too."""
     for sel in candidates:
-        try:
-            el = page.locator(sel).first
-            el.wait_for(state="visible", timeout=timeout_ms)
-            return el
-        except Exception:
-            continue
+        for ctx in _frames(page):
+            try:
+                el = ctx.locator(sel).first
+                el.wait_for(state="visible", timeout=timeout_ms)
+                return el
+            except Exception:
+                continue
     return None
 
 
@@ -246,6 +294,8 @@ class Joiner:
             page.wait_for_timeout(3500)
 
             sel = MEET_SELECTORS if platform is Platform.MEET else ZOOM_SELECTORS
+            if platform is Platform.ZOOM:
+                self._zoom_preamble(page, url, log)
             self._set_name(page, sel, log)
             if platform is Platform.MEET:
                 self._quiet_devices(page, log)
@@ -262,6 +312,38 @@ class Joiner:
             log.append(f"exception: {type(e).__name__}: {e}")
             return JoinResult(JoinState.FAILED, platform, str(e)[:200],
                               round(time.time() - t0, 1), log)
+
+    def _zoom_preamble(self, page, url, log):
+        """Get past the interstitial, the terms box, and the passcode field."""
+        from urllib.parse import parse_qs, urlparse
+
+        link = _first(page, ZOOM_SELECTORS["browser_link"], 2500)
+        if link:
+            try:
+                link.click()
+                page.wait_for_timeout(2500)
+                log.append("clicked through the launch interstitial")
+            except Exception:
+                log.append("interstitial link found but not clickable")
+
+        agree = _first(page, ZOOM_SELECTORS["consent"], 2000)
+        if agree:
+            try:
+                agree.click()
+                page.wait_for_timeout(800)
+                log.append("accepted the terms prompt")
+            except Exception:
+                pass
+
+        pwd = parse_qs(urlparse(url).query).get("pwd", [""])[0]
+        field = _first(page, ZOOM_SELECTORS["passcode"], 2000)
+        if field:
+            if pwd:
+                field.fill(pwd)
+                log.append("passcode filled from the link")
+            else:
+                log.append("PASSCODE REQUIRED but the link carried none — "
+                           "paste the full invite link including ?pwd=")
 
     def _set_name(self, page, sel, log):
         el = _first(page, sel["name_field"], 3000)
@@ -296,7 +378,14 @@ class Joiner:
         log.append(f"join clicked ({label!r})")
 
     def _settle(self, page, sel, timeout_s, log):
-        """Distinguish joined, held in a lobby, and never got in."""
+        """Distinguish joined, held in a lobby, and never got in.
+
+        Meeting clients reshuffle their DOM constantly, so a missed selector
+        must not mean a missed join. If the join control is gone and we are
+        still on the meeting URL, treat that as being in the call — being
+        wrong there costs a spurious "joined"; being wrong the other way
+        leaves the agent silently deaf in a meeting it is actually attending.
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if _first(page, sel["in_call"], 1200):
@@ -305,8 +394,32 @@ class Joiner:
             if _first(page, sel["lobby"], 800):
                 log.append("waiting in lobby")
                 return JoinState.LOBBY, "Waiting for a host to admit the agent."
+            if self._probably_in_call(page, sel):
+                log.append("join control gone and still on the meeting page — "
+                           "assuming in call, selectors did not match")
+                return JoinState.JOINED, ""
             page.wait_for_timeout(1000)
-        return JoinState.FAILED, "Timed out before the call opened."
+
+        try:
+            where = (page.title() or page.url or "")[:80]
+        except Exception:
+            where = ""
+        return JoinState.FAILED, (
+            f"Could not confirm the call opened (last page: {where}). If the "
+            "browser is in the meeting, press Start listening — the agent "
+            "works regardless of what this detector thinks.")
+
+    def _probably_in_call(self, page, sel) -> bool:
+        """Weak signal, consulted only after the strong ones fail."""
+        try:
+            url = page.url or ""
+            on_meeting_page = "/wc/" in url or "meet.google.com/" in url
+            if not on_meeting_page:
+                return False
+            return (_first(page, sel["join"], 600) is None
+                    and _first(page, sel["name_field"], 400) is None)
+        except Exception:
+            return False
 
     def _post_disclosure(self, page, sel, log):
         opener = _first(page, sel["chat_open"], 4000)

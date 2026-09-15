@@ -321,6 +321,15 @@ async def say(payload: dict):
         return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
 
 
+@app.post("/api/levels")
+async def levels():
+    """What is the capture device actually receiving right now?"""
+    from .audio import level_check
+
+    out = await asyncio.to_thread(level_check, hub.settings.capture_device, 2.0)
+    return out
+
+
 @app.post("/api/ask")
 async def ask(payload: dict):
     """Run a question through the router without any audio at all.
@@ -408,6 +417,17 @@ async def handle(msg: dict):
     elif kind == "leave":
         await _leave_meeting()
 
+    elif kind == "in_meeting":
+        # Manual override. Meeting clients change their DOM often enough that
+        # the detector will eventually be wrong, and the person looking at the
+        # browser window knows better than the selectors do.
+        if hub.meeting and hub.meeting.alive:
+            hub.meeting_state = {**hub.meeting_state, "state": "joined",
+                                 "detail": "", "log": []}
+            await hub.broadcast()
+            if not hub.running:
+                await _set_running(True)
+
     elif kind == "autonomy":
         mode = msg.get("mode")
         if mode in ("ask", "improvise"):
@@ -450,11 +470,16 @@ async def _join_meeting(url: str):
         "state": result.state.value,
         "detail": result.detail or (joiner.audio_hint() if result.ok else ""),
         "url": url,
-        "log": result.log[-8:],
+        # Shown on failure. Which step stopped is the only useful thing to
+        # know, and it is invisible without this.
+        "log": result.log[-12:] if not result.ok else [],
     }
     await hub.broadcast()
 
-    # Starting the pipeline only makes sense once we are actually in.
+    # Starting the pipeline only makes sense once we are actually in — but a
+    # browser that is still open after a failed detection is very likely in
+    # the call anyway, so the dashboard offers the override rather than
+    # leaving the agent deaf.
     if result.ok and not hub.running:
         await _set_running(True)
 

@@ -192,3 +192,100 @@ def test_leave_is_safe_before_any_join():
     j = Joiner("AI Agent")
     j.leave()
     assert j.state is JoinState.LEFT
+
+
+# ---------------------------------------------------------------- zoom web
+def test_zoom_invite_is_rewritten_to_the_web_client():
+    """A /j/ link lands on an interstitial whose job is to open the desktop
+    app. /wc/<id>/join skips it."""
+    u = normalize("https://us02web.zoom.us/j/84512345678")
+    assert u == "https://us02web.zoom.us/wc/84512345678/join"
+
+
+def test_the_passcode_survives_the_rewrite():
+    """Dropping it produces a passcode prompt that looks like a hung join."""
+    u = normalize("https://us02web.zoom.us/j/84512345678?pwd=AbC123xyz")
+    assert u.endswith("?pwd=AbC123xyz")
+    assert "/wc/84512345678/join" in u
+
+
+def test_classify_recognises_its_own_rewritten_url():
+    p, mid = classify(normalize("https://us02web.zoom.us/j/84512345678?pwd=x"))
+    assert p is Platform.ZOOM and mid == "84512345678"
+
+
+def test_the_subdomain_is_preserved():
+    """Zoom accounts live on numbered subdomains; a bare zoom.us host 404s."""
+    assert "us06web.zoom.us" in normalize("https://us06web.zoom.us/j/999")
+
+
+def test_zoom_flow_has_selectors_for_its_extra_steps():
+    for step in ("browser_link", "consent", "passcode"):
+        assert ZOOM_SELECTORS.get(step), f"zoom needs {step}"
+
+
+def test_missing_passcode_is_called_out_by_name():
+    """Silently stalling on a passcode field is the worst version of this."""
+    j = Joiner("AI Agent")
+    log = []
+
+    class Page(FakePage):
+        def wait_for_timeout(self, ms): pass
+
+    j._zoom_preamble(Page(missing=["browser", "Launch", "Agree", "agree"]),
+                     "https://us02web.zoom.us/wc/123/join", log)
+    assert any("PASSCODE REQUIRED" in x for x in log)
+
+
+def test_passcode_from_the_link_is_filled():
+    j = Joiner("AI Agent")
+    page, log = FakePage(missing=["browser", "Launch", "Agree", "agree"]), []
+    j._zoom_preamble(page, "https://us02web.zoom.us/wc/123/join?pwd=SeCret", log)
+    assert page.typed == ["SeCret"]
+    assert any("passcode filled" in x for x in log)
+
+
+# ------------------------------------------------- detection is best-effort
+class SettlePage(FakePage):
+    def __init__(self, url, missing=()):
+        super().__init__(missing)
+        self.url = url
+
+    def title(self): return "meeting"
+
+
+def test_missing_selectors_do_not_mean_a_missed_join():
+    """Clients reshuffle their DOM; a detector miss must not deafen the agent."""
+    j = Joiner("AI Agent")
+    page = SettlePage("https://us02web.zoom.us/wc/123/join",
+                      missing=["Leave", "Mute", "foot-bar", "footer", "wc-container",
+                               "meeting-client", "Join", "joinBtn", "submit",
+                               "name", "waiting", "Please wait", "Waiting"])
+    state, detail = j._settle(page, ZOOM_SELECTORS, timeout_s=2, log=[])
+    assert state is JoinState.JOINED
+
+
+def test_a_visible_join_button_is_not_a_join():
+    j = Joiner("AI Agent")
+    page = SettlePage("https://us02web.zoom.us/wc/123/join",
+                      missing=["Leave", "Mute", "foot-bar", "footer",
+                               "wc-container", "meeting-client",
+                               "waiting", "Please wait", "Waiting"])
+    assert not j._probably_in_call(page, ZOOM_SELECTORS)
+
+
+def test_a_page_that_is_not_the_meeting_is_not_a_join():
+    j = Joiner("AI Agent")
+    page = SettlePage("https://zoom.us/signin", missing=["Join", "name"])
+    assert not j._probably_in_call(page, ZOOM_SELECTORS)
+
+
+def test_timeout_message_tells_you_the_agent_still_works():
+    j = Joiner("AI Agent")
+    page = SettlePage("https://zoom.us/signin",
+                      missing=["Leave", "Mute", "foot-bar", "footer",
+                               "wc-container", "meeting-client",
+                               "waiting", "Please wait", "Waiting"])
+    state, detail = j._settle(page, ZOOM_SELECTORS, timeout_s=1, log=[])
+    assert state is JoinState.FAILED
+    assert "Start listening" in detail

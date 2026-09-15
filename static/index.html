@@ -271,6 +271,10 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
       <div class="desc">The meeting's sound has to reach this app, and this app's
       voice has to reach the meeting — both at once, on one machine.</div>
       <div class="status" id="audioStatus"></div>
+      <div class="bench" style="margin-top:8px">
+        <button class="ghost" id="levelBtn">Test what the app hears</button>
+        <span class="out" id="levelOut"></span>
+      </div>
       <div style="margin-top:10px">
         <label for="capDev" style="font-size:13px">Capture the meeting from</label>
         <select id="capDev"></select>
@@ -546,14 +550,32 @@ function paintJoin(s){
   const btn = $("#joinBtn");
   btn.textContent = inCall ? "Leave" : "Join";
   btn.disabled = m.state === "joining";
+
+  // Shown when the browser is open but the detector is unsure. Selector drift
+  // must never be the reason the agent sits silent in a meeting.
+  const unsure = m.state === "joining" || m.state === "failed" || m.state === "lobby";
+  let ovr = $("#imInBtn");
+  if (unsure && m.url) {
+    if (!ovr) {
+      ovr = document.createElement("button");
+      ovr.id = "imInBtn"; ovr.className = "ghost";
+      ovr.textContent = "It's in — start listening";
+      btn.parentNode.insertBefore(ovr, btn);
+    }
+    ovr.onclick = () => send({type:"in_meeting"});
+  } else if (ovr) {
+    ovr.remove();
+  }
   btn.onclick = () => inCall
     ? send({type:"leave"})
     : send({type:"join", url: $("#meetUrl").value.trim()});
 
   if (document.activeElement !== $("#meetUrl") && m.url) $("#meetUrl").value = m.url;
   $("#meetUrl").disabled = inCall || m.state === "joining";
-  $("#joinHint").innerHTML = m.detail
-    ? `<div class="hintbox">${escapeHtml(m.detail)}</div>` : "";
+  const steps = (m.log && m.log.length)
+    ? "\n\nWhat happened:\n" + m.log.map(l => "  " + l).join("\n") : "";
+  $("#joinHint").innerHTML = (m.detail || steps)
+    ? `<div class="hintbox">${escapeHtml((m.detail || "") + steps)}</div>` : "";
 }
 
 function paintBanner(s){
@@ -777,6 +799,15 @@ async function post(url, body){
                              body: JSON.stringify(body)});
   return r.json();
 }
+
+$("#levelBtn").onclick = async () => {
+  const out = $("#levelOut");
+  out.textContent = "listening for 2 seconds — talk, or play the meeting audio…";
+  try {
+    const o = await post("/api/levels", {});
+    out.textContent = o.ok ? `${o.verdict}  ·  ${o.device}` : o.error;
+  } catch (e) { out.textContent = "failed: " + e.message; }
+};
 
 $("#sayBtn").onclick = async () => {
   const text = $("#sayText").value.trim();
