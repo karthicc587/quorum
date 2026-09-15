@@ -13,10 +13,19 @@ from quorum.server import Hub, handle
 
 @pytest.fixture(autouse=True)
 def isolate(tmp_path, monkeypatch):
-    """Never let a test touch the real kb.md, .env, or settings.json."""
+    """Never let a test see the developer's own files.
+
+    The voice directory matters as much as the rest: a machine with a real
+    latent.pkl made "refuses to start without a voice" pass locally and fail
+    for anyone who had actually enrolled one.
+    """
+    from quorum import tts as _tts
+
     monkeypatch.setattr(config, "ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(kbmod, "KB_PATH", tmp_path / "kb.md")
+    monkeypatch.setattr(_tts, "VOICE_DIR", tmp_path / "voices")
+    monkeypatch.setattr(_tts, "SAMPLE_DIR", tmp_path / "voices" / "samples")
 
 
 @pytest.fixture
@@ -116,8 +125,14 @@ async def test_start_refuses_when_audio_is_not_routed(hub, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_refuses_when_no_voice_is_enrolled(hub, monkeypatch):
+    import quorum.server as srv
+
+    class NotEnrolled:
+        enrolled = False
+
     monkeypatch.setattr(hub, "audio_status", lambda: {"ok": True, "problem": None})
     monkeypatch.setattr(hub.tier, "tts_engine", "xtts")
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: NotEnrolled())
     await handle({"type": "run", "on": True})
     assert not hub.running
     assert "voice enrolled" in hub.last_error
@@ -190,7 +205,7 @@ def test_enroll_calls_the_engine_and_prerenders(monkeypatch, tmp_path):
         def prerender(self, text): self.prerendered.append(text)
 
     fake = FakeVoice()
-    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: fake)
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine, speed=1.0: fake)
     c = _client(monkeypatch, tmp_path)
 
     payload = b"RIFF" + b"\x01" * 40_000
@@ -207,7 +222,7 @@ def test_enroll_surfaces_engine_failure_instead_of_silently_passing(monkeypatch,
         def enroll(self, path): raise RuntimeError("no CUDA device")
         def prerender(self, text): pass
 
-    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: BadVoice())
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine, speed=1.0: BadVoice())
     c = _client(monkeypatch, tmp_path)
     r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
                                                    "audio/wav")})
@@ -224,7 +239,7 @@ def test_enroll_cleans_up_the_temp_file(monkeypatch, tmp_path):
         def enroll(self, path): pass
         def prerender(self, text): pass
 
-    monkeypatch.setattr(srv.tts, "build_voice", lambda engine: FakeVoice())
+    monkeypatch.setattr(srv.tts, "build_voice", lambda engine, speed=1.0: FakeVoice())
     c = _client(monkeypatch, tmp_path)
     c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
                                                "audio/wav")})
@@ -238,7 +253,7 @@ def test_enroll_blocked_until_the_model_licence_is_accepted(monkeypatch, tmp_pat
     monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
     srv.hub.settings.xtts_license_accepted = False
     called = []
-    monkeypatch.setattr(srv.tts, "build_voice", lambda e: called.append(e))
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: called.append(e))
 
     c = _client(monkeypatch, tmp_path)
     r = c.post("/api/enroll", files={"reference": ("ref.wav", b"RIFF" + b"\x01" * 40_000,
@@ -257,7 +272,7 @@ def test_enroll_proceeds_once_accepted(monkeypatch, tmp_path):
         def prerender(self, text): pass
 
     monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
-    monkeypatch.setattr(srv.tts, "build_voice", lambda e: FakeVoice())
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: FakeVoice())
     monkeypatch.delenv("COQUI_TOS_AGREED", raising=False)
     srv.hub.settings.xtts_license_accepted = True
 
@@ -402,3 +417,238 @@ async def test_leaving_stops_the_pipeline_too(hub, monkeypatch):
 async def test_leave_is_safe_when_not_in_a_meeting(hub):
     await handle({"type": "leave"})
     assert hub.meeting_state["state"] == "idle"
+
+
+# ------------------------------------------------------------- test bench
+def test_say_rejects_empty_text(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+    assert c.post("/api/say", json={"text": "   "}).status_code == 400
+
+
+def test_say_refuses_before_a_voice_is_enrolled(monkeypatch, tmp_path):
+    import quorum.server as srv
+
+    class NotEnrolled:
+        enrolled = False
+        sample_rate = 24000
+
+    monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: NotEnrolled())
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/say", json={"text": "hello"})
+    assert r.status_code == 400 and "built" in r.json()["error"]
+
+
+def test_say_uses_the_configured_playback_device(monkeypatch, tmp_path):
+    """A test that played out the wrong device would prove nothing."""
+    import numpy as np
+    import quorum.server as srv
+    from quorum.tts import Speech
+
+    class FakeVoice:
+        enrolled = True
+        sample_rate = 24000
+        def say(self, text): return Speech(np.zeros(2400, dtype="float32"), 24000, 900)
+
+    used = {}
+
+    class FakePlayback:
+        def __init__(self, device, rate): used["device"] = device; used["rate"] = rate
+        def play(self, samples, on_start=None, on_end=None): used["played"] = len(samples)
+
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: FakeVoice())
+    monkeypatch.setattr("quorum.audio.Playback", FakePlayback)
+    monkeypatch.setattr("quorum.audio.resolve", lambda v: 46)
+    srv.hub.settings.playback_device = "46"
+
+    c = _client(monkeypatch, tmp_path)
+
+    # Default: your speakers, or the test proves nothing you can hear.
+    r = c.post("/api/say", json={"text": "testing one two"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] and body["tts_ms"] == 900 and body["seconds"] == 0.1
+    assert used["device"] is None, "system default, not the meeting bus"
+    assert "your speakers" in body["sent_to"]
+    assert used["played"] == 2400
+
+    # Opt in to the meeting bus when checking routing.
+    r = c.post("/api/say", json={"text": "testing", "to_meeting": True})
+    assert used["device"] == 46
+    assert "meeting" in r.json()["sent_to"]
+
+
+def test_ask_routes_without_touching_audio(monkeypatch, tmp_path):
+    import quorum.server as srv
+
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/ask", json={"text": "can you have it done by Monday"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tier"] == "escalate"
+    assert body["guard"] == "commitment", "guards need no model, so this works offline"
+
+
+def test_ask_rejects_empty(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+    assert c.post("/api/ask", json={"text": ""}).status_code == 400
+
+
+# ----------------------------------------------------------- clip library
+@pytest.fixture
+def lib(tmp_path, monkeypatch):
+    from quorum import tts as t
+    monkeypatch.setattr(t, "SAMPLE_DIR", tmp_path / "samples")
+    return t.SampleLibrary(tmp_path / "samples")
+
+
+def _wav(seconds=5.0, rate=22050):
+    import io
+    import numpy as np
+    import soundfile as sf
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(int(rate * seconds), dtype="float32"), rate, format="WAV")
+    return buf.getvalue()
+
+
+def test_clip_library_reports_total_and_advice(lib):
+    assert not lib.status()["enough"]
+    lib.add(_wav(40), "base")
+    lib.add(_wav(30), "questions")
+    st = lib.status()
+    assert st["total_seconds"] == 70.0
+    assert st["enough"] and st["has_base"]
+    assert len(st["clips"]) == 2
+
+
+def test_base_recording_comes_first(lib):
+    """Extras without a base is the wrong order, and the advice should say so."""
+    lib.add(_wav(40), "questions")
+    st = lib.status()
+    assert not st["has_base"]
+    assert not st["enough"], "40s of extras is not a voice"
+    assert "base recording" in st["advice"]
+
+
+def test_short_library_asks_for_more(lib):
+    lib.add(_wav(20), "base")
+    st = lib.status()
+    assert "40s" in st["advice"]
+    assert not st["enough"]
+
+
+def test_passages_track_what_is_already_covered(lib):
+    lib.add(_wav(50), "base")
+    lib.add(_wav(15), "hedging")
+    st = lib.status()
+    done = {p["id"]: p["done"] for p in st["passages"]}
+    assert done["hedging"] is True
+    assert done["questions"] is False
+    assert st["next_passage"] == "questions", "offer one at a time, in order"
+
+
+def test_next_passage_is_none_once_everything_is_recorded(lib):
+    from quorum.tts import EXTRA_PASSAGES
+    lib.add(_wav(50), "base")
+    for p in EXTRA_PASSAGES:
+        lib.add(_wav(12), p["id"])
+    st = lib.status()
+    assert st["next_passage"] is None
+    assert "Every passage covered" in st["advice"]
+
+
+def test_passage_id_survives_the_filename_round_trip(lib):
+    p = lib.add(_wav(10), "numbers")
+    assert lib.passage_of(p) == "numbers"
+    assert "numbers" in lib.recorded_passages()
+
+
+def test_removing_a_clip_cannot_escape_the_directory(lib, tmp_path):
+    victim = tmp_path / "important.wav"
+    victim.write_bytes(b"x")
+    assert not lib.remove("../important.wav")
+    assert victim.exists(), "path traversal must not delete anything outside"
+
+
+def test_add_clip_endpoint_rejects_short_and_wrong_format(monkeypatch, tmp_path):
+    from quorum import tts as t
+    monkeypatch.setattr(t, "SAMPLE_DIR", tmp_path / "s")
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/voice/clips",
+               files={"reference": ("a.wav", b"RIFF" + b"\0" * 100, "audio/wav")})
+    assert r.status_code == 400 and "too short" in r.json()["error"]
+    r = c.post("/api/voice/clips",
+               files={"reference": ("a.m4a", b"\0" * 40_000, "audio/mp4")})
+    assert r.status_code == 400 and ".m4a" in r.json()["error"]
+
+
+def test_rebuild_uses_every_clip(monkeypatch, tmp_path):
+    from quorum import tts as t
+    import quorum.server as srv
+
+    monkeypatch.setattr(t, "SAMPLE_DIR", tmp_path / "s")
+    lib = t.SampleLibrary(tmp_path / "s")
+    lib.add(_wav(30), "one")
+    lib.add(_wav(35), "two")
+
+    seen = {}
+
+    class FakeVoice:
+        def enroll(self, paths): seen["n"] = len(paths)
+        def prerender(self, text): seen["prerendered"] = text
+
+    monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
+    srv.hub.settings.xtts_license_accepted = True
+    monkeypatch.setattr(srv.tts, "build_voice", lambda e, speed=1.0: FakeVoice())
+
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/voice/rebuild")
+    body = r.json()
+    assert r.status_code == 200 and body["built_from"] == 2
+    assert isinstance(body["clips"], list), "status list must not shadow the count"
+    assert seen["n"] == 2, "all clips must condition the voice, not just the last"
+    srv.hub.settings.xtts_license_accepted = False
+
+
+def test_rebuild_refuses_with_no_clips(monkeypatch, tmp_path):
+    from quorum import tts as t
+    monkeypatch.setattr(t, "SAMPLE_DIR", tmp_path / "empty")
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/voice/rebuild")
+    assert r.status_code == 400 and "No clips" in r.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_disclosure_is_user_editable_and_used_on_join(hub):
+    await handle({"type": "settings", "values": {"disclosure": "Custom wording."}})
+    assert hub.settings.disclosure == "Custom wording."
+
+
+def test_licence_state_is_exposed_independently_of_enrollment(hub, monkeypatch):
+    """The checkbox must stay reachable after a voice exists.
+
+    Regression: the UI hid it once enrolled, but rebuild still required
+    acceptance — so a reset settings file left the build permanently refused
+    with no way to clear it.
+    """
+    hub.tier.tts_engine = "xtts"
+    hub.settings.xtts_license_accepted = False
+    monkeypatch.setattr(hub, "voice_enrolled", lambda: True)
+    v = hub.snapshot()["voice"]
+    assert v["enrolled"] and v["needs_license"] and not v["license_accepted"], \
+        "all three must be visible so the UI can show the way out"
+
+
+def test_rebuild_refused_message_names_the_licence(monkeypatch, tmp_path):
+    from quorum import tts as t
+    import quorum.server as srv
+
+    monkeypatch.setattr(t, "SAMPLE_DIR", tmp_path / "s")
+    lib = t.SampleLibrary(tmp_path / "s")
+    lib.add(_wav(40), "one")
+    monkeypatch.setattr(srv.hub.tier, "tts_engine", "xtts")
+    srv.hub.settings.xtts_license_accepted = False
+
+    c = _client(monkeypatch, tmp_path)
+    r = c.post("/api/voice/rebuild")
+    assert r.status_code == 400 and "licence" in r.json()["error"]

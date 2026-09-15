@@ -439,3 +439,59 @@ def test_a_400_unrelated_to_json_is_not_retried(monkeypatch):
     with pytest.raises(RuntimeError, match="must not be empty"):
         llm.complete("s", "u")
     assert calls == [True], "only a JSON-mode failure justifies a retry"
+
+
+def test_speed_change_invalidates_the_prerendered_cache(tmp_path):
+    """A holding line cached at the old rate would keep playing after a change."""
+    from quorum.tts import CachedVoice
+
+    class Inner:
+        sample_rate = 24000
+        clones = True
+        enrolled = True
+        speed = 1.0
+
+    v = CachedVoice(Inner(), cache_dir=tmp_path)
+    slow = v._path("Let me check on that.")
+    v.inner.speed = 1.20
+    fast = v._path("Let me check on that.")
+    assert slow != fast
+
+
+def test_same_text_and_speed_hits_the_same_cache_entry(tmp_path):
+    from quorum.tts import CachedVoice
+
+    class Inner:
+        sample_rate = 24000
+        clones = True
+        enrolled = True
+        speed = 1.08
+
+    v = CachedVoice(Inner(), cache_dir=tmp_path)
+    assert v._path("hello") == v._path("hello")
+
+
+def test_removing_a_settings_field_does_not_wipe_saved_values(tmp_path, monkeypatch):
+    """Regression: an unknown key raised, the handler swallowed it, and every
+    saved setting silently reverted to defaults."""
+    import json
+    from quorum import config
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "retired_field": "gone",
+        "capture_device": "5",
+        "wake_phrase": "AI Sam",
+    }))
+    s = config.Settings.load()
+    assert s.capture_device == "5"
+    assert s.wake_phrase == "AI Sam"
+    assert not hasattr(s, "retired_field")
+
+
+def test_corrupt_settings_file_falls_back_to_defaults(tmp_path, monkeypatch):
+    from quorum import config
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    (tmp_path / "settings.json").write_text("{ not json")
+    assert config.Settings.load().wake_phrase == config.Settings().wake_phrase

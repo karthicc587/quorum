@@ -38,6 +38,12 @@ is exercised: the pipeline runs end to end against fakes.
 `python -m uvicorn quorum.server:app` then open <http://127.0.0.1:8000> and
 press **Run demo** — the whole escalation flow plays without any audio hardware.
 
+## Setting up a new machine
+
+See **[INSTALL.md](INSTALL.md)** — ordered steps, and the nine traps that cost
+real time on the first install. The first four need admin rights and a reboot,
+so do them a day ahead.
+
 ## Running it
 
 Double-click **start.bat** (Windows) or **start.command** (macOS). It installs

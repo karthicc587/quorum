@@ -110,27 +110,40 @@ def _api_of(d: Device) -> str:
     return sd.query_hostapis(sd.query_devices()[d.index]["hostapi"])["name"]
 
 
-def _describe(devs: list[Device], kind: str) -> list[dict]:
-    """One entry per (name, host API), ranked so the safest choice is first.
+def _describe(devs: list[Device], kind: str, collapse: bool = True) -> list[dict]:
+    """One entry per device, at its best host API.
 
-    Windows exposes each device once per host API, which turns six virtual
-    devices into thirty dropdown entries. We keep the index — names are not
-    unique and selecting by name is ambiguous — but sort so the entry most
-    likely to work is at the top.
+    Windows exposes the same device once per host API, so eight virtual buses
+    become forty dropdown entries that all look alike. Only the ranking makes
+    them different, and the ranking is ours — so pick the best one per device
+    and hide the rest. The index is what gets stored either way, since names
+    repeat and selecting by name is ambiguous.
     """
-    out = []
+    entries = []
     for d in devs:
         api = _api_of(d)
-        out.append({
+        entries.append({
             "index": d.index,
             "name": d.name,
             "api": api,
+            "rank": _API_RANK.get(api, 9),
             "channels": d.inputs if kind == "input" else d.outputs,
-            "label": f"{d.name}  ·  {api}",
+            "label": d.name if collapse else f"{d.name}  ·  {api}",
             "recommended": api == "MME",
         })
-    out.sort(key=lambda e: (_API_RANK.get(e["api"], 9), e["name"]))
-    return out
+
+    if collapse:
+        best: dict[str, dict] = {}
+        for e in entries:
+            cur = best.get(e["name"])
+            if cur is None or e["rank"] < cur["rank"]:
+                best[e["name"]] = e
+        entries = list(best.values())
+
+    entries.sort(key=lambda e: (e["rank"], e["name"]))
+    for e in entries:
+        e.pop("rank", None)
+    return entries
 
 
 def diagnose() -> dict:

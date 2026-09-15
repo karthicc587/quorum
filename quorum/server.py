@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import kb as kbmod
-from . import platforms, tts
+from . import tts
 from .config import ROOT, Settings, detect_tier, get_secret, redact, set_secret
 
 STATIC = ROOT / "static"
@@ -50,10 +50,8 @@ class Hub:
         self.running = False
         self.pipeline = None
         self.last_error = None
-        self.platform_id = self.settings.platform
         self.meeting = None            # JoinerThread while we are in a call
         self.meeting_state = {"state": "idle", "detail": "", "url": ""}
-        self.preflight = platforms.Preflight()
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
 
@@ -101,16 +99,16 @@ class Hub:
             "audio": self.audio_status(),
             "voice": {"enrolled": self.voice_enrolled(),
                       "engine": tts.engine_label(self.tier.tts_engine),
-                      "script": tts.REFERENCE_SCRIPT, "note": tts.ENROLLMENT_NOTE,
+                      "script": tts.MASTER_SCRIPT, "note": tts.ENROLLMENT_NOTE,
                       "needs_license": self.tier.tts_engine == "xtts",
                       "license_accepted": self.settings.xtts_license_accepted,
                       "license_url": tts.XTTS_LICENSE_URL,
-                      "license_summary": tts.XTTS_LICENSE_SUMMARY},
+                      "license_summary": tts.XTTS_LICENSE_SUMMARY,
+                      "speed": self.settings.voice_speed,
+                      "samples": tts.SampleLibrary().status()},
             "latency": self.pipeline.latency_report() if self.pipeline else {},
             "error": self.last_error,
             "meeting": self.meeting_state,
-            "preflight": self.preflight.status(platforms.get(self.platform_id)),
-            "platforms": [{"id": p.id, "name": p.name} for p in platforms.PLATFORMS.values()],
         }
 
     def audio_status(self) -> dict:
@@ -126,7 +124,8 @@ class Hub:
 
     def voice_enrolled(self) -> bool:
         try:
-            return tts.build_voice(self.tier.tts_engine).enrolled
+            return tts.build_voice(self.tier.tts_engine,
+                                   self.settings.voice_speed).enrolled
         except Exception:
             return False
 
@@ -174,6 +173,64 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.post("/api/voice/clips")
+async def add_clip(reference: UploadFile = File(...), passage: str = "base"):
+    """Add one recording to the library. Does not rebuild the voice."""
+    data = await reference.read()
+    if len(data) < 32_000:
+        return JSONResponse({"ok": False, "error": "That clip is under a couple "
+                             "of seconds — too short to be worth adding."},
+                            status_code=400)
+    suffix = Path(reference.filename or "clip.wav").suffix.lower()
+    if suffix not in (".wav", ".flac"):
+        return JSONResponse({"ok": False, "error": f"Need .wav or .flac, got "
+                             f"{suffix or 'no extension'}. Windows Voice "
+                             "Recorder saves .m4a — convert it first."},
+                            status_code=400)
+    lib = tts.SampleLibrary()
+    lib.add(data, passage)
+    await hub.broadcast()
+    return {"ok": True, **lib.status()}
+
+
+@app.delete("/api/voice/clips/{name}")
+async def drop_clip(name: str):
+    lib = tts.SampleLibrary()
+    ok = lib.remove(name)
+    await hub.broadcast()
+    return {"ok": ok, **lib.status()}
+
+
+@app.post("/api/voice/rebuild")
+async def rebuild_voice():
+    """Recompute the speaker latent from every clip in the library.
+
+    Separate from adding clips because conditioning takes seconds and there is
+    no reason to pay it per upload — add three takes, rebuild once.
+    """
+    lib = tts.SampleLibrary()
+    paths = lib.paths()
+    if not paths:
+        return JSONResponse({"ok": False, "error": "No clips to build from."},
+                            status_code=400)
+    if hub.tier.tts_engine == "xtts" and not hub.settings.xtts_license_accepted:
+        return JSONResponse({"ok": False, "error": "Accept the model licence first."},
+                            status_code=400)
+    try:
+        tts.accept_xtts_license()
+        voice = tts.build_voice(hub.tier.tts_engine, hub.settings.voice_speed)
+        await asyncio.to_thread(voice.enroll, paths)
+        await asyncio.to_thread(voice.prerender, hub.settings.holding_line)
+        hub.last_error = None
+    except Exception as e:
+        hub.last_error = f"voice build: {e}"
+        await hub.broadcast()
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
+    await hub.broadcast()
+    # Distinct key: status() already uses "clips" for the list itself.
+    return {"ok": True, "built_from": len(paths), **lib.status()}
+
+
 @app.post("/api/enroll")
 async def enroll(reference: UploadFile = File(...)):
     """Accept a reference recording and compute the speaker latent once.
@@ -211,7 +268,7 @@ async def enroll(reference: UploadFile = File(...)):
 
     try:
         tts.accept_xtts_license()
-        voice = tts.build_voice(hub.tier.tts_engine)
+        voice = tts.build_voice(hub.tier.tts_engine, hub.settings.voice_speed)
         await asyncio.to_thread(voice.enroll, tmp)
         await asyncio.to_thread(voice.prerender, hub.settings.holding_line)
         hub.last_error = None
@@ -224,6 +281,69 @@ async def enroll(reference: UploadFile = File(...)):
 
     await hub.broadcast()
     return {"ok": True}
+
+
+@app.post("/api/say")
+async def say(payload: dict):
+    """Speak a line through the real playback device, with no meeting.
+
+    Exists because the alternative way to hear the agent is to schedule a
+    call, join it, configure the client and talk to yourself — which is a
+    slow loop for a question as small as "is this too fast".
+    """
+    from .audio import Playback, resolve
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "Nothing to say."}, status_code=400)
+
+    # Two different questions, so two destinations. "Does this sound right?"
+    # needs your speakers. "Is the routing correct?" needs the meeting bus —
+    # which you cannot hear, because it only feeds the call.
+    to_meeting = bool(payload.get("to_meeting"))
+    device = resolve(hub.settings.playback_device) if to_meeting else None
+
+    try:
+        voice = tts.build_voice(hub.tier.tts_engine, hub.settings.voice_speed)
+        if not voice.enrolled and hub.tier.tts_engine == "xtts":
+            return JSONResponse(
+                {"ok": False, "error": "No voice built yet."}, status_code=400)
+        speech = await asyncio.to_thread(voice.say, text)
+        player = Playback(device, voice.sample_rate)
+        await asyncio.to_thread(player.play, speech.samples)
+        return {"ok": True, "tts_ms": speech.tts_ms,
+                "seconds": round(len(speech.samples) / voice.sample_rate, 1),
+                "cached": speech.cached,
+                "sent_to": "the meeting device" if to_meeting else "your speakers"}
+    except Exception as e:
+        hub.last_error = f"say: {e}"
+        await hub.broadcast()
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
+
+
+@app.post("/api/ask")
+async def ask(payload: dict):
+    """Run a question through the router without any audio at all.
+
+    Answers "would it escalate this?" in a second, which is the question you
+    actually have when writing the knowledge base.
+    """
+    from .backends import build_llm
+    from .router import Router
+
+    q = (payload.get("text") or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "No question."}, status_code=400)
+
+    r = Router(build_llm(hub.settings), hub.kb,
+               hub.settings.escalate_below_confidence,
+               autonomy=hub.settings.autonomy)
+    d = await asyncio.to_thread(r.decide, q, [])
+    if d.tier.value == "escalate" and hub.settings.autonomy == "improvise" and not d.guard:
+        d = await asyncio.to_thread(r.improvise, q, [])
+    return {"ok": True, "tier": d.tier.value, "guard": d.guard,
+            "confidence": d.confidence, "reason": d.reason, "draft": d.draft,
+            "improvised": d.improvised, "latency_ms": d.latency_ms}
 
 
 @app.websocket("/ws")
@@ -297,18 +417,6 @@ async def handle(msg: dict):
                 hub.pipeline.settings.autonomy = mode   # applies mid-meeting
         await hub.broadcast()
 
-    elif kind == "platform":
-        pid = msg.get("id")
-        if pid in platforms.PLATFORMS:
-            hub.platform_id = pid
-            hub.settings.platform = pid
-            hub.settings.save()
-        await hub.broadcast()
-
-    elif kind == "preflight":
-        hub.preflight.confirm(msg.get("key", ""), bool(msg.get("on", True)))
-        await hub.broadcast()
-
     elif kind == "run":
         await _set_running(bool(msg.get("on")))
 
@@ -327,8 +435,7 @@ async def _join_meeting(url: str):
     if hub.meeting and hub.meeting.alive:
         await _leave_meeting()
 
-    plat = platforms.get(hub.platform_id)
-    joiner = Joiner(hub.settings.display_name, plat.disclosure_chat)
+    joiner = Joiner(hub.settings.display_name, hub.settings.disclosure)
     if not joiner.logged_in:
         hub.meeting_state = {"state": "failed", "url": url,
                              "detail": joiner.session_report()}
@@ -415,7 +522,7 @@ def _build_pipeline():
         on_error=on_error,
     )
 
-    voice = tts.build_voice(hub.tier.tts_engine)
+    voice = tts.build_voice(hub.tier.tts_engine, hub.settings.voice_speed)
     if hub.tier.tts_engine == "xtts" and not voice.enrolled:
         raise RuntimeError("No voice enrolled yet. Record a reference clip "
                            "under Settings, or switch to the Piper fallback.")

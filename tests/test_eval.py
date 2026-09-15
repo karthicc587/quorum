@@ -1,5 +1,4 @@
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -8,86 +7,7 @@ import pytest
 
 from quorum.evaluate import _fmt as format_report
 from quorum.evaluate import escalation, latency, report, wake
-from quorum.platforms import MEET, PLATFORMS, ZOOM, Preflight, get
 from quorum.telemetry import TurnLog, TurnRecord
-
-
-# ------------------------------------------------------------------ platforms
-def test_both_clients_are_supported():
-    assert set(PLATFORMS) == {"meet", "zoom"}
-    assert get("zoom") is ZOOM
-    assert get("nonsense") is MEET, "unknown ids fall back rather than crash"
-
-
-def test_zoom_flags_original_sound_as_critical():
-    """The single most common cause of a Zoom demo failing."""
-    critical = {s.key for s in ZOOM.steps if s.critical}
-    assert "zoom_original_arm" in critical
-    assert "zoom_suppression" in critical
-
-
-def test_every_platform_disables_noise_processing():
-    for p in PLATFORMS.values():
-        blob = " ".join(s.title.lower() + s.detail.lower() for s in p.steps)
-        assert "noise" in blob, f"{p.id} must address noise processing"
-
-
-def test_every_platform_has_a_disclosure_step_and_message():
-    for p in PLATFORMS.values():
-        assert p.disclosure_chat.strip()
-        assert any("chat" in s.key for s in p.steps), f"{p.id} missing disclosure step"
-        assert p.rename_how.strip()
-
-
-@pytest.fixture
-def flight(tmp_path):
-    return Preflight(tmp_path / "preflight.json")
-
-
-def test_preflight_blocks_until_critical_steps_confirmed(flight):
-    st = flight.status(ZOOM)
-    assert not st["ready"]
-    assert "Turn Original Sound on in the meeting" in st["blocking"]
-
-    for s in ZOOM.steps:
-        if s.critical:
-            flight.confirm(s.key)
-    assert flight.status(ZOOM)["ready"]
-
-
-def test_non_critical_steps_do_not_block(flight):
-    for s in ZOOM.steps:
-        if s.critical:
-            flight.confirm(s.key)
-    st = flight.status(ZOOM)
-    assert st["ready"]
-    assert any(not s["done"] for s in st["steps"]), "some steps still open"
-
-
-def test_critical_confirmations_expire(flight, monkeypatch):
-    """Zoom's Original Sound resets between meetings, so a stale tick is a lie."""
-    for s in ZOOM.steps:
-        flight.confirm(s.key)
-    assert flight.status(ZOOM)["ready"]
-
-    later = time.time() + Preflight.TTL_S + 60
-    monkeypatch.setattr(time, "time", lambda: later)
-    st = flight.status(ZOOM)
-    assert not st["ready"], "critical steps must go stale"
-    assert all(s["done"] for s in st["steps"] if not s["critical"]), \
-        "non-critical steps stay confirmed"
-
-
-def test_preflight_persists_across_instances(tmp_path):
-    p = tmp_path / "pf.json"
-    Preflight(p).confirm("zoom_mic")
-    assert Preflight(p)._data.get("zoom_mic")
-
-
-def test_unconfirming_removes_the_tick(flight):
-    flight.confirm("zoom_mic")
-    flight.confirm("zoom_mic", on=False)
-    assert not flight._data.get("zoom_mic")
 
 
 # ------------------------------------------------------------------ telemetry

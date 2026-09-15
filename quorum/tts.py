@@ -25,20 +25,200 @@ from .config import ROOT
 VOICE_DIR = ROOT / "voices"
 VOICE_DIR.mkdir(exist_ok=True)
 
-REFERENCE_SCRIPT = [
+# The base recording. Deliberately mixed: a flat statement, a question, a
+# hesitation, numbers, an aside. A clone built only on even declarative
+# sentences has nothing to go on when the agent has to ask something or
+# trail off.
+MASTER_SCRIPT = [
     "The quarterly review is scheduled for the first week of next month.",
     "I've gone through the draft and left a few comments in the margin.",
     "Could you send that over when you get a chance? No rush at all.",
     "Seventeen, forty-two, ninety-eight, three hundred and six.",
-    "Honestly, I think the second option makes more sense than the first.",
-    "That's a good question — let me look into it and get back to you.",
+    "Honestly — and I might be wrong here — I think the second option makes "
+    "more sense.",
+    "That's a good question. Let me look into it and come back to you.",
+    "Wait, sorry, can you say that again? I lost the thread for a second.",
+    "Right, yeah, that works for me.",
 ]
 
+# Optional passages, each covering something the base recording is thin on.
+# Offered one at a time rather than as a wall of text: the realistic failure
+# is someone recording sixty seconds once and never coming back, so every
+# addition has to be a small, obviously worthwhile ask.
+EXTRA_PASSAGES = [
+    {
+        "id": "questions",
+        "title": "Asking things",
+        "why": "The agent asks for clarification more than it states facts, "
+               "and rising intonation is what the base script covers least.",
+        "lines": [
+            "Sorry, could you repeat the last part? I want to make sure I have it right.",
+            "Is that the same deadline we agreed on, or has it moved?",
+            "Who's picking that up — is it still with the same team?",
+            "Do you want me to send the notes round afterwards?",
+        ],
+    },
+    {
+        "id": "hedging",
+        "title": "Not being sure",
+        "why": "Most of what the agent says out loud is a hedge. If this is "
+               "missing it delivers 'I'd have to check' with more confidence "
+               "than the words carry.",
+        "lines": [
+            "I'd have to check on that, off the top of my head I'm not certain.",
+            "My sense is it's fine, but don't hold me to the exact number.",
+            "That's a good question. Let me look into it and come back to you.",
+            "Honestly, I'm not the right person to answer that one.",
+        ],
+    },
+    {
+        "id": "numbers",
+        "title": "Numbers and dates",
+        "why": "Dates and figures come out mechanically unless the model has "
+               "heard you say some.",
+        "lines": [
+            "We're looking at the fourteenth, maybe the fifteenth at a push.",
+            "It came in around twelve hundred, a bit under budget.",
+            "Q3 was up about eight percent on the same quarter last year.",
+            "Two thousand and twenty-six, first week of March.",
+        ],
+    },
+    {
+        "id": "quick",
+        "title": "Talking quickly",
+        "why": "The base script is read at reading pace. This catches how you "
+               "sound when you are actually in a meeting and moving.",
+        "lines": [
+            "Yeah no that's fine, go ahead, I'll catch up on the notes after.",
+            "Right — so if we do that, we push everything else back a week, "
+            "which I don't love but it works.",
+            "Sure, sure. Makes sense. Let's do that.",
+        ],
+    },
+    {
+        "id": "flat",
+        "title": "Low energy",
+        "why": "Nobody sounds bright in a Tuesday status meeting, and a clone "
+               "built only on clear reading sounds oddly enthusiastic.",
+        "lines": [
+            "Nothing much to report from my side this week.",
+            "Same as last time, still waiting on the other team.",
+            "No blockers. It's moving, just slowly.",
+        ],
+    },
+]
+
+
+def passage(pid: str) -> dict | None:
+    return next((p for p in EXTRA_PASSAGES if p["id"] == pid), None)
+
+
 ENROLLMENT_NOTE = (
-    "Read the six lines at a normal speaking pace in a quiet room. Reference "
-    "quality is the single biggest factor in how the clone sounds and it "
-    "cannot be fixed afterwards: no echo, no fan noise, no compression."
+    "Read these in a quiet room at the pace you actually speak in a meeting. "
+    "Around 60 seconds. No echo, no fan noise, no compression — reference "
+    "quality cannot be fixed afterwards."
 )
+
+
+SAMPLE_DIR = VOICE_DIR / "samples"
+
+# Below this the clone is recognisably you but not convincingly; above it,
+# similarity stops improving and enrollment just gets slow.
+GOOD_SECONDS = 60
+ENOUGH_SECONDS = 90
+
+
+class SampleLibrary:
+    """The reference clips the voice is built from.
+
+    Kept as separate files rather than one recording so they can be added a
+    few at a time. Variety matters more than length past a point — six flat
+    declarative sentences is the usual reason a clone sounds close but wrong —
+    so the flow is designed around adding another take, not re-doing it all.
+    """
+
+    def __init__(self, directory: Path | None = None):
+        self.dir = directory or SAMPLE_DIR
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def paths(self) -> list[Path]:
+        return sorted(p for p in self.dir.glob("*.wav") if p.stat().st_size > 0)
+
+    @staticmethod
+    def duration(path: Path) -> float:
+        try:
+            import soundfile as sf
+            info = sf.info(str(path))
+            return round(info.frames / info.samplerate, 1)
+        except Exception:
+            return 0.0
+
+    def add(self, data: bytes, passage_id: str = "extra") -> Path:
+        """Filename carries the passage id, so the UI knows what is covered."""
+        import re as _re
+        pid = _re.sub(r"[^a-z0-9]+", "-", (passage_id or "extra").lower()).strip("-")[:24]
+        n = len(self.paths()) + 1
+        p = self.dir / f"{n:02d}__{pid or 'extra'}.wav"
+        p.write_bytes(data)
+        return p
+
+    @staticmethod
+    def passage_of(path: Path) -> str:
+        return path.stem.split("__", 1)[-1] if "__" in path.stem else "extra"
+
+    def recorded_passages(self) -> set[str]:
+        return {self.passage_of(p) for p in self.paths()}
+
+    @property
+    def has_base(self) -> bool:
+        return "base" in self.recorded_passages()
+
+    def remove(self, name: str) -> bool:
+        p = self.dir / Path(name).name        # never escape the directory
+        if p.exists() and p.parent == self.dir:
+            p.unlink()
+            return True
+        return False
+
+    def clear(self) -> None:
+        for p in self.paths():
+            p.unlink()
+
+    def total_seconds(self) -> float:
+        return round(sum(self.duration(p) for p in self.paths()), 1)
+
+    def status(self) -> dict:
+        done = self.recorded_passages()
+        clips = [{"name": p.name, "seconds": self.duration(p),
+                  "passage": self.passage_of(p)} for p in self.paths()]
+        total = round(sum(c["seconds"] for c in clips), 1)
+
+        if not self.has_base:
+            advice = ("Start with the base recording below — everything else "
+                      "builds on it.")
+        elif total < GOOD_SECONDS:
+            advice = (f"{total:.0f}s. Under a minute the clone tends to sound "
+                      f"close but not quite right; another {GOOD_SECONDS - total:.0f}s "
+                      "makes a real difference.")
+        else:
+            remaining = [p for p in EXTRA_PASSAGES if p["id"] not in done]
+            advice = (f"{total:.0f}s across {len(clips)} recording"
+                      f"{'' if len(clips) == 1 else 's'}. "
+                      + (f"{len(remaining)} optional passage"
+                         f"{'' if len(remaining) == 1 else 's'} left if you want "
+                         "to sharpen it further." if remaining else
+                         "Every passage covered."))
+
+        return {
+            "clips": clips,
+            "total_seconds": total,
+            "advice": advice,
+            "enough": total >= GOOD_SECONDS and self.has_base,
+            "has_base": self.has_base,
+            "passages": [{**p, "done": p["id"] in done} for p in EXTRA_PASSAGES],
+            "next_passage": next((p["id"] for p in EXTRA_PASSAGES
+                                  if p["id"] not in done), None),
+        }
 
 
 @dataclass
@@ -146,6 +326,14 @@ class Voice:
         return False
 
 
+# How much reference audio conditions the GPT. XTTS defaults to 6 seconds,
+# which is enough to be recognisably you and not enough to be convincingly
+# you. 30 is the practical ceiling — past that similarity stops improving and
+# enrollment gets slow.
+GPT_COND_LEN = 30
+MAX_REF_LEN = 30
+
+
 class XTTSVoice(Voice):
     """XTTS-v2 via the maintained `coqui-tts` fork.
 
@@ -153,8 +341,9 @@ class XTTSVoice(Voice):
     coursework but must be stated if the repo is public.
     """
 
-    def __init__(self, latent_path: Path | None = None):
+    def __init__(self, latent_path: Path | None = None, speed: float = 1.0):
         self.latent_path = latent_path or VOICE_DIR / "latent.pkl"
+        self.speed = speed
         self._model = None
         self._latent = None
 
@@ -182,10 +371,19 @@ class XTTSVoice(Voice):
     def enrolled(self) -> bool:
         return self.latent_path.exists()
 
-    def enroll(self, reference_wav: Path) -> None:
+    def enroll(self, reference_wav: Path | list[Path]) -> None:
+        """Compute the speaker latent once, from one clip or several.
+
+        Several is better: XTTS averages the conditioning, so a handful of
+        clips covering different pitch and pace generalises where one flat
+        reading does not.
+        """
+        paths = [reference_wav] if isinstance(reference_wav, (str, Path)) else list(reference_wav)
         m = self._load().synthesizer.tts_model
         gpt_latent, speaker_emb = m.get_conditioning_latents(
-            audio_path=[str(reference_wav)]
+            audio_path=[str(p) for p in paths],
+            gpt_cond_len=GPT_COND_LEN,
+            max_ref_length=MAX_REF_LEN,
         )
         self.latent_path.write_bytes(pickle.dumps((gpt_latent, speaker_emb)))
         self._latent = (gpt_latent, speaker_emb)
@@ -206,7 +404,8 @@ class XTTSVoice(Voice):
         t0 = time.perf_counter()
         gpt_latent, speaker_emb = self._get_latent()
         m = self._load().synthesizer.tts_model
-        out = m.inference(text, "en", gpt_latent, speaker_emb, temperature=0.6)
+        out = m.inference(text, "en", gpt_latent, speaker_emb,
+                          temperature=0.6, speed=self.speed)
         wav = np.asarray(out["wav"], dtype=np.float32)
         return Speech(wav, self.sample_rate, int((time.perf_counter() - t0) * 1000))
 
@@ -279,8 +478,12 @@ class CachedVoice(Voice):
             f.unlink()                  # a new voice invalidates every cache entry
 
     def _path(self, text: str) -> Path:
+        # Key on speed too: a cached holding line rendered at the old rate
+        # would keep playing after the setting changed.
         import hashlib
-        return self.dir / f"{hashlib.sha1(text.encode()).hexdigest()[:16]}.npy"
+        speed = getattr(self.inner, "speed", 1.0)
+        key = f"{text}|{speed:.2f}".encode()
+        return self.dir / f"{hashlib.sha1(key).hexdigest()[:16]}.npy"
 
     def load(self) -> None:
         self.inner.load()
@@ -300,8 +503,8 @@ class CachedVoice(Voice):
         return self.inner.say(text)
 
 
-def build_voice(tier_engine: str) -> CachedVoice:
-    inner: Voice = XTTSVoice() if tier_engine == "xtts" else PiperVoice()
+def build_voice(tier_engine: str, speed: float = 1.0) -> CachedVoice:
+    inner: Voice = XTTSVoice(speed=speed) if tier_engine == "xtts" else PiperVoice()
     return CachedVoice(inner)
 
 

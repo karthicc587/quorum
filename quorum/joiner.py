@@ -427,10 +427,9 @@ def _cli(argv: list[str]) -> int:
               "  python -m quorum.joiner join <meeting-url>")
         return 1
     from .config import Settings
-    from .platforms import get as get_platform
 
     s = Settings.load()
-    j = Joiner(s.display_name, get_platform(s.platform).disclosure_chat)
+    j = Joiner(s.display_name, s.disclosure)
 
     if argv[0] == "login":
         print("A browser will open. Sign in, then close the window.")

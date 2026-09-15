@@ -62,15 +62,30 @@ def test_candidates_carry_unique_indices():
     assert all("label" in e and "api" in e for e in out)
 
 
-def test_mme_is_ranked_first_and_flagged():
+def test_best_host_api_wins_per_device():
+    """Forty near-identical entries is not a menu. One per device, best API."""
     ins = audio._describe([d for d in FAKE if d.inputs], "input")
+    assert len(ins) == len({e["name"] for e in ins}), "one entry per device"
+    b2 = next(e for e in ins if "Out B2" in e["name"])
+    assert b2["api"] == "MME" and b2["index"] == 5, "MME outranks WASAPI here"
     assert ins[0]["api"] == "MME"
-    assert ins[0]["recommended"]
-    assert not ins[-1]["recommended"]
 
 
-def test_label_disambiguates_same_named_devices():
+def test_expanded_view_keeps_every_host_api():
+    ins = audio._describe([d for d in FAKE if d.inputs], "input", collapse=False)
+    assert len(ins) == len([d for d in FAKE if d.inputs])
+    assert any(e["api"] == "Windows WASAPI" for e in ins)
+
+
+def test_duplicate_names_collapse_to_one_entry():
     out = audio._describe([d for d in FAKE if d.outputs], "output")
     same = [e for e in out if e["name"].startswith("Voicemeeter Input")]
+    assert len(same) == 1, "the same device must not appear twice"
+    assert same[0]["index"] == 46, "DirectSound outranks WASAPI"
+
+
+def test_expanded_labels_name_the_host_api():
+    out = audio._describe([d for d in FAKE if d.outputs], "output", collapse=False)
+    same = [e for e in out if e["name"].startswith("Voicemeeter Input")]
     assert len(same) == 2
-    assert same[0]["label"] != same[1]["label"], "labels must be distinguishable"
+    assert same[0]["label"] != same[1]["label"]

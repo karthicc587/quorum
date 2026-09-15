@@ -43,6 +43,7 @@ header .spacer{flex:1}
 .ghost:hover{border-color:var(--ink)}
 .solid{background:var(--ink);color:var(--surface);border:1px solid var(--ink);border-radius:4px;padding:6px 14px;font-size:13.5px;font-weight:500}
 .solid:hover{background:#000}
+.solid:disabled{background:var(--line);border-color:var(--line);color:var(--muted);cursor:not-allowed}
 .solid.stop{background:var(--surface);color:var(--ink)}
 
 /* ------------------------------------------------------------ signal chain */
@@ -155,6 +156,17 @@ dialog::backdrop{background:rgba(21,27,36,.34)}
 .check .d{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:52ch}
 .check.crit .t::after{content:" — required";color:var(--wait);font-size:12px}
 .check.done .t{color:var(--muted)}
+.clip{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #EFF1F4;font-size:13.5px}
+.clip:last-child{border-bottom:0}
+.clip .dur{font-family:var(--mono);font-size:12px;color:var(--muted);margin-left:auto}
+.clip button{background:none;border:0;color:var(--muted);font-size:13px;text-decoration:underline;padding:0 2px}
+.clip button:hover{color:var(--wait)}
+.bench{display:flex;gap:8px;align-items:center;margin-top:8px}
+.bench input{flex:1;font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit;min-width:0}
+.bench .out{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-height:16px;white-space:nowrap}
+.slider{display:flex;align-items:center;gap:10px;margin-top:6px}
+.slider input[type=range]{flex:1}
+.slider .v{font-family:var(--mono);font-size:12.5px;min-width:34px;text-align:right}
 .joinbar{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
 .joinbar input{flex:1;font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit;min-width:0}
 .joinbar .st{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
@@ -178,10 +190,7 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
 
   <header>
     <div class="wordmark">quorum<span>.ai</span></div>
-    <div class="tile-name" id="tileName">AI Agent — Kartik</div>
-    <button class="pill" id="preflightPill"></button>
-    <div class="spacer"></div>
-    <button class="ghost" id="demoBtn">Run demo</button>
+      <div class="spacer"></div>
     <button class="ghost" id="setBtn">Settings</button>
     <button class="solid" id="runBtn">Start listening</button>
   </header>
@@ -214,8 +223,7 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
     <section class="panel">
       <h2>Transcript <span class="count" id="turnCount"></span></h2>
       <div class="log" id="log">
-        <div class="empty">Nothing heard yet. Start listening, or run the demo to
-        see a full turn without a soundcard attached.</div>
+        <div class="empty">Nothing heard yet.</div>
       </div>
     </section>
 
@@ -247,22 +255,13 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
     </div>
 
     <div class="field">
-      <label>Meeting platform</label>
-      <div class="desc">The audio path is the same either way. What differs is
-      how each client processes your microphone, and how you rename your tile.</div>
-      <div class="tabs" id="platformTabs"></div>
-      <div class="desc" style="margin-top:9px" id="renameHow"></div>
-    </div>
-
-    <div class="field">
-      <label>Before you join</label>
-      <div class="desc" id="preflightNote"></div>
-      <div id="checklist"></div>
-      <div class="tokens" id="platformNotes" style="margin-top:10px"></div>
-      <div style="margin-top:12px">
-        <label style="font-size:13px">Disclosure message to paste in chat</label>
-        <textarea id="disclosure" readonly style="min-height:66px;font-size:14px"></textarea>
-        <button class="ghost" id="copyDisc" style="margin-top:6px">Copy message</button>
+      <label for="disclosure">Disclosure message</label>
+      <div class="desc">Posted in the meeting chat when the agent joins. Edit it
+      to suit the room; this exact text is what gets sent.</div>
+      <textarea id="disclosure" style="min-height:70px;font-size:14px"></textarea>
+      <div style="margin-top:7px">
+        <button class="solid" id="saveDisc">Save</button>
+        <button class="ghost" id="copyDisc">Copy</button>
         <span class="saved" id="discCopied"></span>
       </div>
     </div>
@@ -293,13 +292,60 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
           <span class="t">I accept the model licence and will keep this non-commercial</span>
         </label>
       </div>
-      <div id="voiceEnroll" style="margin-top:10px;display:none">
-        <div class="desc" id="voiceNote"></div>
-        <div class="script" id="voiceScript"></div>
-        <div style="margin-top:9px">
-          <input type="file" id="refWav" accept=".wav,.flac,audio/wav,audio/flac">
-          <div class="tokens" id="enrollState"></div>
+      <div id="voiceEnroll" style="margin-top:10px">
+        <div class="status" id="clipAdvice"></div>
+
+        <div id="stageBase" style="margin-top:10px">
+          <div class="desc" id="voiceNote"></div>
+          <div class="script" id="voiceScript"></div>
+          <div class="bench" style="margin-top:8px">
+            <input type="file" id="baseWav" accept=".wav,.flac,audio/wav,audio/flac" style="flex:1">
+          </div>
         </div>
+
+        <div id="stageExtra" style="margin-top:10px;display:none">
+          <div id="passageCard"></div>
+          <div class="bench" style="margin-top:8px">
+            <input type="file" id="extraWav" accept=".wav,.flac,audio/wav,audio/flac" style="flex:1">
+            <button class="ghost" id="skipPassage">Different one</button>
+          </div>
+          <details style="margin-top:9px">
+            <summary style="font-size:13px;color:var(--muted);cursor:pointer">All passages</summary>
+            <div id="passageList" style="margin-top:6px"></div>
+          </details>
+        </div>
+
+        <div id="clipList" style="margin-top:10px"></div>
+        <div class="bench" style="margin-top:8px">
+          <button class="solid" id="rebuildBtn">Build voice</button>
+          <span class="out" id="enrollState"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Try it without a meeting</label>
+      <div class="desc">Speak a line through your real output device, or route a
+      question and see the decision — neither needs a call.</div>
+      <div class="bench">
+        <input id="sayText" placeholder="Say this out loud…">
+        <button class="ghost" id="sayBtn">Speak</button>
+      </div>
+      <div class="out" id="sayOut"></div>
+      <div class="bench">
+        <input id="askText" placeholder="Ask a question and see how it routes…">
+        <button class="ghost" id="askBtn">Route</button>
+      </div>
+      <div class="out" id="askOut"></div>
+    </div>
+
+    <div class="field">
+      <label for="speed">Speaking rate</label>
+      <div class="desc">Above about 1.25 the model starts slurring, so the
+      slider stops there.</div>
+      <div class="slider">
+        <input type="range" id="speed" min="0.85" max="1.25" step="0.01">
+        <span class="v" id="speedVal"></span>
       </div>
     </div>
 
@@ -525,8 +571,7 @@ function fillDevices(sel, items, current){
   el.innerHTML = `<option value="">System default</option>` +
     (items || []).map(d => {
       const sel_ = String(d.index) === String(current) ? " selected" : "";
-      const tick = d.recommended ? "  ✓" : "";
-      return `<option value="${d.index}"${sel_}>${escapeHtml(d.label)}${tick}</option>`;
+      return `<option value="${d.index}"${sel_}>${escapeHtml(d.label)}</option>`;
     }).join("");
 }
 
@@ -545,14 +590,85 @@ function paintAudio(s){
   fillDevices("#playDev", a.playback_candidates || [], s.settings.playback_device);
 }
 
+let chosenPassage = null;      // null means "whatever comes next"
+
+function passageCard(p){
+  return `<div class="status"><b>${escapeHtml(p.title)}</b><br>
+    <span style="color:var(--muted)">${escapeHtml(p.why)}</span>
+    <div class="script" style="margin-top:8px">
+      ${p.lines.map(l => `<div>${escapeHtml(l)}</div>`).join("")}
+    </div></div>`;
+}
+
+async function upload(file, passageId, out){
+  out.textContent = "adding…";
+  const body = new FormData();
+  body.append("reference", file);
+  try {
+    const r = await fetch("/api/voice/clips?passage=" + encodeURIComponent(passageId),
+                          {method:"POST", body});
+    const o = await r.json();
+    out.textContent = o.ok ? "Added." : o.error;
+  } catch (e) { out.textContent = "Upload failed: " + e.message; }
+}
+
+function refreshClips(st){
+  if (!st) return;
+  $("#clipAdvice").className = "status " + (st.enough ? "good" : "bad");
+  $("#clipAdvice").textContent = st.advice || "";
+
+  // Stage one until a base recording exists — extras on their own are not a
+  // voice, and offering both at once invites doing them in the wrong order.
+  $("#stageBase").style.display  = st.has_base ? "none" : "block";
+  $("#stageExtra").style.display = st.has_base ? "block" : "none";
+
+  const passages = st.passages || [];
+  const pending = passages.filter(p => !p.done);
+  const pick = passages.find(p => p.id === chosenPassage && !p.done)
+            || passages.find(p => p.id === st.next_passage);
+
+  $("#passageCard").innerHTML = pick ? passageCard(pick)
+    : `<div class="status good">Every passage recorded. Build the voice to
+       take them into account.</div>`;
+  $("#extraWav").style.display = pick ? "" : "none";
+  $("#skipPassage").style.display = pending.length > 1 ? "" : "none";
+  $("#skipPassage").onclick = () => {
+    const i = pending.findIndex(p => p.id === (pick && pick.id));
+    chosenPassage = pending[(i + 1) % pending.length].id;
+    refreshClips(window.__lastVoice);
+  };
+  $("#extraWav").onchange = async e => {
+    if (e.target.files[0] && pick) {
+      await upload(e.target.files[0], pick.id, $("#enrollState"));
+      chosenPassage = null;
+    }
+    e.target.value = "";
+  };
+
+  $("#passageList").innerHTML = passages.map(p =>
+    `<div class="clip"><span>${escapeHtml(p.title)}</span>
+       <span class="dur">${p.done ? "recorded" : "—"}</span></div>`).join("");
+
+  $("#clipList").innerHTML = (st.clips || []).map(c => `
+    <div class="clip"><span>${escapeHtml(c.passage)}</span>
+      <span class="dur">${c.seconds.toFixed(1)}s</span>
+      <button data-clip="${encodeURIComponent(c.name)}">remove</button></div>`).join("");
+  $("#clipList").querySelectorAll("button").forEach(b => b.onclick = () =>
+    fetch("/api/voice/clips/" + b.dataset.clip, {method:"DELETE"}));
+}
+
 function paintVoice(s){
   $("#voiceEngine").textContent = s.voice.engine;
   const el = $("#voiceStatus");
   el.className = "status " + (s.voice.enrolled ? "good" : "bad");
   el.textContent = s.voice.enrolled
-    ? "A reference recording is saved. The agent speaks in your voice."
-    : "No recording yet. The agent will use the fallback voice, which is not yours.";
-  const needsLicence = s.voice.needs_license && !s.voice.enrolled;
+    ? "Voice built. Add more clips and rebuild any time to improve it."
+    : "No voice built yet. The agent will use the fallback voice, which is not yours.";
+  // Tied to acceptance, not to enrollment. Keying it on "not yet enrolled"
+  // produced a dead end: after the saved settings were reset, the voice was
+  // still built but acceptance was false, so rebuild refused while the
+  // checkbox that would clear it was hidden.
+  const needsLicence = s.voice.needs_license && !s.voice.license_accepted;
   $("#licenceBlock").style.display = needsLicence ? "block" : "none";
   if (needsLicence) {
     $("#licenceText").innerHTML = escapeHtml(s.voice.license_summary) +
@@ -560,57 +676,32 @@ function paintVoice(s){
     $("#licenceOk").checked = s.voice.license_accepted;
     $("#licenceOk").onchange = e => send({type:"license", accepted: e.target.checked});
   }
-  const blocked = needsLicence && !s.voice.license_accepted;
-  $("#voiceEnroll").style.display = (s.voice.enrolled || blocked) ? "none" : "block";
+  // The clip library stays visible after enrollment — improving the voice by
+  // adding another take is the normal case, not a redo.
+  // The clip library stays visible either way — you can gather recordings
+  // before accepting. Only the build is gated, and the button says why.
+  $("#voiceEnroll").style.display = "block";
+  const build = $("#rebuildBtn");
+  if (build) {
+    build.disabled = needsLicence;
+    build.title = needsLicence ? "Accept the model licence above first" : "";
+  }
   $("#voiceNote").textContent = s.voice.note;
   $("#voiceScript").innerHTML = s.voice.script.map(l => `<div>${escapeHtml(l)}</div>`).join("");
+  window.__lastVoice = s.voice.samples;
+  refreshClips(s.voice.samples);
+  if (document.activeElement !== $("#speed")) {
+    $("#speed").value = s.voice.speed;
+    $("#speedVal").textContent = (+s.voice.speed).toFixed(2);
+  }
 }
 
-function paintPreflight(s){
-  const pf = s.preflight;
-  const pill = $("#preflightPill");
-  const open = pf.steps.filter(x => !x.done).length;
-  pill.className = "pill " + (pf.ready ? "good" : "bad");
-  pill.textContent = pf.ready
-    ? `${pf.name} ready`
-    : `${pf.name} — ${pf.blocking.length} required step${pf.blocking.length === 1 ? "" : "s"} left`;
-  pill.title = open ? pf.steps.filter(x => !x.done).map(x => x.title).join("\n") : "";
-  pill.onclick = () => $("#sheet").showModal();
-}
 
-function paintPlatform(s){
-  const pf = s.preflight;
-  $("#platformTabs").innerHTML = s.platforms.map(p =>
-    `<button data-id="${p.id}" aria-pressed="${p.id === pf.platform}">${escapeHtml(p.name)}</button>`
-  ).join("");
-  document.querySelectorAll("#platformTabs button").forEach(b =>
-    b.onclick = () => send({type:"platform", id:b.dataset.id}));
-
-  $("#renameHow").textContent = pf.rename_how;
-  $("#preflightNote").textContent = pf.ready
-    ? "All required steps confirmed. Required steps reset after a day."
-    : "Nothing here can be checked from inside the app — these live in the meeting client.";
-
-  $("#checklist").innerHTML = pf.steps.map(x => `
-    <label class="check ${x.critical ? "crit":""} ${x.done ? "done":""}">
-      <input type="checkbox" data-key="${x.key}" ${x.done ? "checked":""}>
-      <span><span class="t">${escapeHtml(x.title)}</span>
-      <span class="d">${escapeHtml(x.detail)}</span></span>
-    </label>`).join("");
-  document.querySelectorAll("#checklist input").forEach(i =>
-    i.onchange = () => send({type:"preflight", key:i.dataset.key, on:i.checked}));
-
-  $("#platformNotes").innerHTML = pf.notes.map(n => `• ${escapeHtml(n)}`).join("<br>");
-  $("#disclosure").value = pf.disclosure_chat;
-}
 
 function paintSettings(s){
-  // The checklist has to repaint even with the sheet open — switching
-  // platform happens inside the sheet, and the steps are what changes.
-  // These two repaint even with the sheet open: both are driven by state the
-  // user changes from inside it (platform tabs, the licence tick), and
-  // skipping the repaint leaves the panel showing the pre-click state.
-  paintPlatform(s);
+  // Repaints even with the sheet open: the licence tick and the clip list are
+  // both changed from inside it, and skipping the repaint leaves the panel
+  // showing the pre-click state.
   paintVoice(s);
   if ($("#sheet").open) return;             // don't clobber mid-edit
   paintAudio(s);
@@ -619,6 +710,8 @@ function paintSettings(s){
   $("#kbTokens").textContent =
     `${s.kb.counts.facts} facts · ${s.kb.counts.positions} positions · ` +
     `${s.kb.counts.boundaries} escalation rules · ~${s.kb.tokens} tokens`;
+  if (document.activeElement !== $("#disclosure"))
+    $("#disclosure").value = s.settings.disclosure || "";
   $("#kbWarn").innerHTML = s.kb.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("");
   $("#keyState").textContent = s.secrets.GROQ_API_KEY
     ? `Saved: ${s.secrets.GROQ_API_KEY}`
@@ -626,7 +719,6 @@ function paintSettings(s){
   $("#tierInfo").textContent =
     `${s.tier.name} · speech ${s.tier.stt_model} on ${s.tier.stt_device} · ` +
     `voice ${s.tier.tts_engine} · about ${(s.tier.est_latency_ms/1000).toFixed(1)}s per reply. ${s.tier.note}`;
-  $("#tileName").textContent = s.settings.display_name;
 }
 
 /* ------------------------------------------------------------------ paint */
@@ -637,7 +729,6 @@ function render(s){
   paintRight(s);
   paintBanner(s);
   paintJoin(s);
-  paintPreflight(s);
   paintSettings(s);
   $("#runBtn").textContent = s.running ? "Stop" : "Start listening";
   $("#runBtn").classList.toggle("stop", s.running);
@@ -648,7 +739,6 @@ $("#runBtn").onclick  = () => send({type:"run", on: !state?.running});
 $("#meetUrl").addEventListener("keydown", e => {
   if (e.key === "Enter") send({type:"join", url: e.target.value.trim()});
 });
-$("#demoBtn").onclick = () => send({type:"demo"});
 $("#setBtn").onclick  = () => $("#sheet").showModal();
 $("#closeSheet").onclick = () => { $("#sheet").close(); render(state); };
 $("#saveKb").onclick = () => {
@@ -661,23 +751,61 @@ $("#saveKb").onclick = () => {
   $("#kbSaved").textContent = "Saved";
   setTimeout(() => $("#kbSaved").textContent = "", 1800);
 };
-$("#refWav").onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const state = $("#enrollState");
-  state.textContent = "Analysing the recording. This takes a few seconds, and "
-    + "longer the first time while the model downloads.";
-  const body = new FormData();
-  body.append("reference", file);
-  try {
-    const res = await fetch("/api/enroll", {method: "POST", body});
-    const out = await res.json();
-    state.textContent = out.ok ? "Voice enrolled." : out.error;
-  } catch (err) {
-    state.textContent = "Upload failed: " + err.message;
-  }
+$("#baseWav").onchange = async (e) => {
+  if (e.target.files[0]) await upload(e.target.files[0], "base", $("#enrollState"));
   e.target.value = "";
 };
+
+$("#rebuildBtn").onclick = async () => {
+  const st = $("#enrollState");
+  st.textContent = "Building the voice from every clip. A few seconds, longer "
+    + "the first time while the model downloads.";
+  try {
+    const out = await (await fetch("/api/voice/rebuild", {method:"POST"})).json();
+    st.textContent = out.ok ? `Voice built from ${out.built_from} clip(s).` : out.error;
+  } catch (err) { st.textContent = "Build failed: " + err.message; }
+};
+
+$("#saveDisc").onclick = () => {
+  send({type:"settings", values:{disclosure: $("#disclosure").value}});
+  $("#discCopied").textContent = "Saved";
+  setTimeout(() => $("#discCopied").textContent = "", 1800);
+};
+
+async function post(url, body){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                             body: JSON.stringify(body)});
+  return r.json();
+}
+
+$("#sayBtn").onclick = async () => {
+  const text = $("#sayText").value.trim();
+  if (!text) return;
+  $("#sayOut").textContent = "synthesising…";
+  try {
+    const o = await post("/api/say", {text});
+    $("#sayOut").textContent = o.ok
+      ? `${o.seconds}s  ·  ${o.tts_ms}ms to generate${o.cached ? "  (cached)" : ""}`
+      : o.error;
+  } catch (e) { $("#sayOut").textContent = "failed: " + e.message; }
+};
+
+$("#askBtn").onclick = async () => {
+  const text = $("#askText").value.trim();
+  if (!text) return;
+  $("#askOut").textContent = "routing…";
+  try {
+    const o = await post("/api/ask", {text});
+    if (!o.ok) { $("#askOut").textContent = o.error; return; }
+    const how = o.guard ? `${o.guard} rule` : o.reason;
+    $("#askOut").textContent = o.tier === "answer"
+      ? `${o.improvised ? "improvised" : "answer"} ${o.confidence.toFixed(2)} · ${o.latency_ms}ms — "${o.draft}"`
+      : `escalate · ${how} · ${o.latency_ms}ms`;
+  } catch (e) { $("#askOut").textContent = "failed: " + e.message; }
+};
+
+$("#speed").oninput = e => $("#speedVal").textContent = (+e.target.value).toFixed(2);
+$("#speed").onchange = e => send({type:"settings", values:{voice_speed: e.target.value}});
 
 $("#copyDisc").onclick = async () => {
   await navigator.clipboard.writeText($("#disclosure").value);

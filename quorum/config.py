@@ -190,23 +190,43 @@ class Settings:
     ollama_model: str = "qwen2.5:7b-instruct-q4_K_M"
     holding_line: str = "Let me check on that and come back to you."
     display_name: str = "AI Agent — Kartik"
-    platform: str = "meet"            # meet | zoom
     # ask       — refuse, play the holding line, wait for a typed reply
     # improvise — answer anyway, from context, without waiting
     autonomy: str = "ask"
+    # XTTS speaking rate. Above about 1.25 the model starts slurring and
+    # dropping consonants, so the UI does not offer more.
+    voice_speed: float = 1.08
     xtts_license_accepted: bool = False
+    # Posted in the meeting chat on join. Editable, because the wording that
+    # reads right depends entirely on the room.
+    disclosure: str = (
+        "Heads up: I'm attending through an AI delegate rather than in person. "
+        "It answers from a fixed set of notes and hands anything else back to me."
+    )
     capture_device: str = ""          # substring match; blank = system default
     playback_device: str = ""
 
     @classmethod
     def load(cls) -> "Settings":
+        """Merge saved values over the defaults, ignoring fields we no longer have.
+
+        Passing an unknown key straight into the constructor raises, and the
+        old code swallowed that and returned pure defaults — so removing a
+        single field from this class silently wiped every saved setting the
+        user had, device choices included.
+        """
         p = _state_dir() / "settings.json"
-        if p.exists():
-            try:
-                return cls(**{**asdict(cls()), **json.loads(p.read_text())})
-            except Exception:
-                pass
-        return cls()
+        if not p.exists():
+            return cls()
+        try:
+            saved = json.loads(p.read_text())
+        except Exception:
+            return cls()
+        if not isinstance(saved, dict):
+            return cls()
+        known = set(asdict(cls()))
+        return cls(**{**asdict(cls()),
+                      **{k: v for k, v in saved.items() if k in known}})
 
     def save(self) -> None:
         (_state_dir() / "settings.json").write_text(json.dumps(asdict(self), indent=2))
