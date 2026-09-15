@@ -14,8 +14,12 @@ Requires-Dist: sounddevice>=0.4; extra == "audio"
 Requires-Dist: silero-vad>=5.1; extra == "audio"
 Provides-Extra: voice
 Requires-Dist: coqui-tts>=0.27; extra == "voice"
+Requires-Dist: transformers<5,>=4.57; extra == "voice"
+Requires-Dist: torchcodec>=0.9; extra == "voice"
+Requires-Dist: soundfile>=0.12; extra == "voice"
 Provides-Extra: dev
 Requires-Dist: pytest>=8; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
 Requires-Dist: httpx; extra == "dev"
-Requires-Dist: playwright; extra == "dev"
+Provides-Extra: join
+Requires-Dist: playwright>=1.44; extra == "join"

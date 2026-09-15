@@ -51,6 +51,8 @@ class Hub:
         self.pipeline = None
         self.last_error = None
         self.platform_id = self.settings.platform
+        self.meeting = None            # JoinerThread while we are in a call
+        self.meeting_state = {"state": "idle", "detail": "", "url": ""}
         self.preflight = platforms.Preflight()
         self._clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
@@ -106,6 +108,7 @@ class Hub:
                       "license_summary": tts.XTTS_LICENSE_SUMMARY},
             "latency": self.pipeline.latency_report() if self.pipeline else {},
             "error": self.last_error,
+            "meeting": self.meeting_state,
             "preflight": self.preflight.status(platforms.get(self.platform_id)),
             "platforms": [{"id": p.id, "name": p.name} for p in platforms.PLATFORMS.values()],
         }
@@ -279,6 +282,12 @@ async def handle(msg: dict):
         hub.settings.save()
         await hub.broadcast()
 
+    elif kind == "join":
+        await _join_meeting((msg.get("url") or "").strip())
+
+    elif kind == "leave":
+        await _leave_meeting()
+
     elif kind == "autonomy":
         mode = msg.get("mode")
         if mode in ("ask", "improvise"):
@@ -305,6 +314,52 @@ async def handle(msg: dict):
 
     elif kind == "demo":
         asyncio.create_task(_demo())
+
+
+async def _join_meeting(url: str):
+    """Join, then start listening — the two are useless apart."""
+    from .joiner import Joiner, JoinerThread
+
+    if not url:
+        hub.meeting_state = {"state": "failed", "detail": "No meeting link.", "url": ""}
+        return await hub.broadcast()
+
+    if hub.meeting and hub.meeting.alive:
+        await _leave_meeting()
+
+    plat = platforms.get(hub.platform_id)
+    joiner = Joiner(hub.settings.display_name, plat.disclosure_chat)
+    if not joiner.logged_in:
+        hub.meeting_state = {"state": "failed", "url": url,
+                             "detail": joiner.session_report()}
+        return await hub.broadcast()
+
+    hub.meeting_state = {"state": "joining", "detail": "", "url": url}
+    await hub.broadcast()
+
+    hub.meeting = JoinerThread(joiner)
+    result = await asyncio.to_thread(hub.meeting.start, url)
+    hub.meeting_state = {
+        "state": result.state.value,
+        "detail": result.detail or (joiner.audio_hint() if result.ok else ""),
+        "url": url,
+        "log": result.log[-8:],
+    }
+    await hub.broadcast()
+
+    # Starting the pipeline only makes sense once we are actually in.
+    if result.ok and not hub.running:
+        await _set_running(True)
+
+
+async def _leave_meeting():
+    if hub.running:
+        await _set_running(False)
+    if hub.meeting:
+        await asyncio.to_thread(hub.meeting.stop)
+        hub.meeting = None
+    hub.meeting_state = {"state": "idle", "detail": "", "url": ""}
+    await hub.broadcast()
 
 
 async def _set_running(on: bool):

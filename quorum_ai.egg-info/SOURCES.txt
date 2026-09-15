@@ -6,6 +6,7 @@ quorum/backends.py
 quorum/config.py
 quorum/evaluate.py
 quorum/gate.py
+quorum/joiner.py
 quorum/kb.py
 quorum/pipeline.py
 quorum/platforms.py
@@ -21,8 +22,10 @@ quorum_ai.egg-info/SOURCES.txt
 quorum_ai.egg-info/dependency_links.txt
 quorum_ai.egg-info/requires.txt
 quorum_ai.egg-info/top_level.txt
+tests/test_audio.py
 tests/test_eval.py
 tests/test_gate.py
+tests/test_joiner.py
 tests/test_logic.py
 tests/test_pipeline.py
 tests/test_server.py

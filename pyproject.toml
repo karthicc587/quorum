@@ -29,7 +29,9 @@ audio = ["faster-whisper>=1.0", "sounddevice>=0.4", "silero-vad>=5.1"]
 # Windows is the common case.
 voice = ["coqui-tts>=0.27", "transformers>=4.57,<5", "torchcodec>=0.9",
          "soundfile>=0.12"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx", "playwright"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx"]
+# Browser automation for joining the meeting as its own participant.
+join = ["playwright>=1.44"]
 
 [tool.setuptools]
 # Without this, setuptools auto-discovery sees quorum/, static/ and voices/

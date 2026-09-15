@@ -24,7 +24,11 @@ button{font:inherit;color:inherit;cursor:pointer}
 :focus-visible{outline:2px solid var(--live);outline-offset:2px}
 
 /* ---------------------------------------------------------------- shell */
-.shell{height:100%;display:grid;grid-template-rows:auto auto auto 1fr;max-width:1240px;margin:0 auto;padding:20px 24px 24px;gap:16px}
+/* Flex, not grid: every element added to the shell used to need the row
+   template updated by hand, and forgetting made the signal chain swallow all
+   the free space. Here only .body grows. */
+.shell{height:100%;display:flex;flex-direction:column;max-width:1240px;margin:0 auto;padding:20px 24px 24px;gap:16px}
+.shell > *{flex:none}
 
 header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
 .wordmark{font-weight:700;font-size:22px;letter-spacing:-.03em}
@@ -59,7 +63,7 @@ header .spacer{flex:1}
 .node.warn::after{background:var(--wait)}
 
 /* ------------------------------------------------------------------ body */
-.body{display:grid;grid-template-columns:1fr 380px;gap:16px;min-height:0}
+.body{display:grid;grid-template-columns:1fr 380px;gap:16px;min-height:0;flex:1 1 auto}
 @media(max-width:920px){.body{grid-template-columns:1fr}.right{order:-1}}
 
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;min-height:0}
@@ -151,6 +155,12 @@ dialog::backdrop{background:rgba(21,27,36,.34)}
 .check .d{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:52ch}
 .check.crit .t::after{content:" — required";color:var(--wait);font-size:12px}
 .check.done .t{color:var(--muted)}
+.joinbar{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.joinbar input{flex:1;font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit;min-width:0}
+.joinbar .st{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
+.joinbar .st.on{color:var(--ok)}
+.joinbar .st.wait{color:var(--wait)}
+.hintbox{font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--wait);border-radius:4px;padding:9px 12px;margin-top:8px;white-space:pre-line}
 .mode{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--surface)}
 .mode button{border:0;background:none;padding:5px 12px;font-size:13px;border-right:1px solid var(--line);white-space:nowrap}
 .mode button:last-child{border-right:0}
@@ -177,6 +187,13 @@ select{width:100%;font:inherit;font-size:13.5px;padding:7px 9px;border:1px solid
   </header>
 
   <div id="bannerSlot"></div>
+
+  <div class="joinbar">
+    <input id="meetUrl" placeholder="Paste a Google Meet or Zoom link and the agent joins on its own">
+    <span class="st" id="joinState"></span>
+    <button class="solid" id="joinBtn">Join</button>
+  </div>
+  <div id="joinHint"></div>
 
   <div class="chain" id="chain">
     <div class="node" data-stage="listening">
@@ -467,6 +484,32 @@ function startClock(t0){
 function stopClock(){ if (clockTimer) clearInterval(clockTimer); clockTimer = null; }
 
 /* --------------------------------------------------------------- settings */
+const JOIN_LABEL = {
+  idle: "", joining: "joining…", lobby: "waiting to be admitted",
+  joined: "in the meeting", left: "left", failed: "join failed",
+};
+
+function paintJoin(s){
+  const m = s.meeting || {state:"idle"};
+  const inCall = m.state === "joined" || m.state === "lobby";
+  const st = $("#joinState");
+  st.textContent = JOIN_LABEL[m.state] || m.state;
+  st.className = "st" + (m.state === "joined" ? " on"
+                        : (m.state === "failed" ? " wait" : ""));
+
+  const btn = $("#joinBtn");
+  btn.textContent = inCall ? "Leave" : "Join";
+  btn.disabled = m.state === "joining";
+  btn.onclick = () => inCall
+    ? send({type:"leave"})
+    : send({type:"join", url: $("#meetUrl").value.trim()});
+
+  if (document.activeElement !== $("#meetUrl") && m.url) $("#meetUrl").value = m.url;
+  $("#meetUrl").disabled = inCall || m.state === "joining";
+  $("#joinHint").innerHTML = m.detail
+    ? `<div class="hintbox">${escapeHtml(m.detail)}</div>` : "";
+}
+
 function paintBanner(s){
   const slot = $("#bannerSlot");
   if (!s.error){ slot.innerHTML = ""; return; }
@@ -593,6 +636,7 @@ function render(s){
   paintLog(s.turns);
   paintRight(s);
   paintBanner(s);
+  paintJoin(s);
   paintPreflight(s);
   paintSettings(s);
   $("#runBtn").textContent = s.running ? "Stop" : "Start listening";
@@ -601,6 +645,9 @@ function render(s){
 
 /* ----------------------------------------------------------------- wiring */
 $("#runBtn").onclick  = () => send({type:"run", on: !state?.running});
+$("#meetUrl").addEventListener("keydown", e => {
+  if (e.key === "Enter") send({type:"join", url: e.target.value.trim()});
+});
 $("#demoBtn").onclick = () => send({type:"demo"});
 $("#setBtn").onclick  = () => $("#sheet").showModal();
 $("#closeSheet").onclick = () => { $("#sheet").close(); render(state); };

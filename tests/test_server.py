@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import asyncio
 import pytest
 
 from quorum import config
@@ -282,3 +283,122 @@ async def test_license_message_persists_the_choice(hub):
     assert hub.settings.xtts_license_accepted
     await handle({"type": "license", "accepted": False})
     assert not hub.settings.xtts_license_accepted
+
+
+# ------------------------------------------------------------- meeting join
+@pytest.mark.asyncio
+async def test_join_refuses_an_empty_url(hub):
+    await handle({"type": "join", "url": "   "})
+    assert hub.meeting_state["state"] == "failed"
+    assert "No meeting link" in hub.meeting_state["detail"]
+
+
+@pytest.mark.asyncio
+async def test_join_refuses_without_a_browser_session(hub, monkeypatch):
+    """Better to say so than to open a browser that stalls on a login page."""
+    import quorum.joiner as jm
+
+    class NoSession:
+        logged_in = False
+        def __init__(self, *a, **k): pass
+        def session_report(self): return "No profile. Run: python -m quorum.joiner login"
+
+    monkeypatch.setattr(jm, "Joiner", NoSession)
+    await handle({"type": "join", "url": "https://meet.google.com/abc-defg-hij"})
+    assert hub.meeting_state["state"] == "failed"
+    assert "joiner login" in hub.meeting_state["detail"]
+    assert hub.meeting is None
+
+
+@pytest.mark.asyncio
+async def test_successful_join_starts_the_pipeline(hub, monkeypatch):
+    """Joining without listening is useless, so the two are tied together."""
+    import quorum.joiner as jm
+    import quorum.server as srv
+    from quorum.joiner import JoinResult, JoinState, Platform
+
+    class FakeJoiner:
+        logged_in = True
+        def __init__(self, *a, **k): pass
+        def audio_hint(self): return "set the mic to Voicemeeter Out B1"
+
+    class FakeThread:
+        alive = True
+        def __init__(self, joiner): pass
+        def start(self, url, timeout_s=90):
+            return JoinResult(JoinState.JOINED, Platform.MEET, "")
+        def stop(self): pass
+
+    started = []
+
+    async def fake_running(on):
+        started.append(on)
+        hub.running = on
+
+    monkeypatch.setattr(jm, "Joiner", FakeJoiner)
+    monkeypatch.setattr(jm, "JoinerThread", FakeThread)
+    monkeypatch.setattr(srv, "_set_running", fake_running)
+
+    await handle({"type": "join", "url": "https://meet.google.com/abc-defg-hij"})
+    assert hub.meeting_state["state"] == "joined"
+    assert "Voicemeeter Out B1" in hub.meeting_state["detail"], \
+        "the human still has to pick the device; say so"
+    assert started == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_lobby_wait_is_not_reported_as_failure(hub, monkeypatch):
+    import quorum.joiner as jm
+    import quorum.server as srv
+    from quorum.joiner import JoinResult, JoinState, Platform
+
+    class FakeJoiner:
+        logged_in = True
+        def __init__(self, *a, **k): pass
+        def audio_hint(self): return "hint"
+
+    class FakeThread:
+        alive = True
+        def __init__(self, joiner): pass
+        def start(self, url, timeout_s=90):
+            return JoinResult(JoinState.LOBBY, Platform.MEET, "Waiting for a host.")
+        def stop(self): pass
+
+    monkeypatch.setattr(jm, "Joiner", FakeJoiner)
+    monkeypatch.setattr(jm, "JoinerThread", FakeThread)
+    monkeypatch.setattr(srv, "_set_running", lambda on: asyncio.sleep(0))
+
+    await handle({"type": "join", "url": "https://meet.google.com/abc-defg-hij"})
+    assert hub.meeting_state["state"] == "lobby"
+    assert "Waiting for a host" in hub.meeting_state["detail"]
+
+
+@pytest.mark.asyncio
+async def test_leaving_stops_the_pipeline_too(hub, monkeypatch):
+    import quorum.server as srv
+
+    class FakeThread:
+        def __init__(self): self.stopped = False
+        def stop(self): self.stopped = True
+
+    fake = FakeThread()
+    hub.meeting = fake
+    hub.running = True
+    stopped = []
+
+    async def fake_running(on):
+        stopped.append(on)
+        hub.running = on
+
+    monkeypatch.setattr(srv, "_set_running", fake_running)
+    await handle({"type": "leave"})
+    assert fake.stopped
+    assert stopped == [False]
+    assert hub.meeting is None
+    assert hub.meeting_state["state"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_leave_is_safe_when_not_in_a_meeting(hub):
+    await handle({"type": "leave"})
+    assert hub.meeting_state["state"] == "idle"

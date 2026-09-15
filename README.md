@@ -38,6 +38,19 @@ is exercised: the pipeline runs end to end against fakes.
 `python -m uvicorn quorum.server:app` then open <http://127.0.0.1:8000> and
 press **Run demo** — the whole escalation flow plays without any audio hardware.
 
+## Running it
+
+Double-click **start.bat** (Windows) or **start.command** (macOS). It installs
+anything missing on first run, starts the server, and opens the dashboard.
+Keep the window open — closing it stops the agent.
+
+To pin it: right-click start.bat, Send to, Desktop (create shortcut). Change
+the shortcut's icon and it behaves like any other app.
+
+There is deliberately no packaged .exe. Bundling PyTorch and CUDA produces a
+~6GB binary that fails in ways that cannot be debugged from the outside; a
+batch file that calls a normal Python install is both smaller and fixable.
+
 ## Setup
 
 ```bash
@@ -85,6 +98,33 @@ Three sections, and the split is the safety property:
 - Latency, transcription accuracy and clone quality: not yet measured. Those
   need the hardware. `Pipeline.latency_report()` produces p50/p95 per stage
   once you run it.
+
+## Two ways to be in the meeting
+
+**Borrowed microphone** (the default). You join the call yourself and point the
+client's microphone at the virtual cable. The agent speaks through it. Simple,
+nothing to authenticate, but your machine has to sit in the meeting.
+
+**Its own participant** (`quorum/joiner.py`). A browser joins the call as the
+agent, renames itself, and posts the disclosure in chat.
+
+```bash
+pip install -e ".[join]" && playwright install chromium
+python -m quorum.joiner login                    # sign in by hand, once
+python -m quorum.joiner join <meeting-url>
+```
+
+Sign-in is manual on purpose. Google blocks scripted logins, and every product
+in this space uses the same approach: authenticate once into a persistent
+browser profile and reuse the cookie. No password is ever passed to or stored
+by this code.
+
+The browser is not headless — headless Chrome exposes no audio devices, so it
+could neither hear the meeting nor speak into it. Expect a real Chrome window
+you leave alone.
+
+If a platform blocks automated joining, that is the platform's decision and the
+answer is to join by hand. Nothing here tries to defeat that.
 
 ## Meet and Zoom
 
